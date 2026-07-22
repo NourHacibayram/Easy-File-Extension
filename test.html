@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clipboard Image Upload Extension Test Sandbox</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: rgba(22, 30, 46, 0.7);
+      --border: rgba(255, 255, 255, 0.1);
+      --accent: #6366f1;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(at 10% 20%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+        radial-gradient(at 90% 80%, rgba(168, 85, 247, 0.15) 0px, transparent 50%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 40px 20px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      max-width: 860px;
+      width: 100%;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      color: #818cf8;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-size: 2.4rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    p.subtitle {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    .card-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-desc {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .upload-zone {
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 14px;
+      padding: 30px 20px;
+      text-align: center;
+      background: rgba(15, 23, 42, 0.4);
+      transition: all 0.2s;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .upload-zone:hover {
+      border-color: var(--accent);
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    .upload-icon {
+      font-size: 36px;
+      margin-bottom: 10px;
+    }
+
+    .file-input {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    .btn-upload {
+      display: inline-block;
+      padding: 10px 20px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      margin-top: 10px;
+      pointer-events: none;
+    }
+
+    .preview-box {
+      margin-top: 20px;
+      padding: 16px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      display: none;
+    }
+
+    .preview-box.active {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .preview-thumb {
+      width: 64px;
+      height: 64px;
+      border-radius: 10px;
+      object-fit: cover;
+      background: #000;
+    }
+
+    .preview-info h4 {
+      font-size: 0.92rem;
+      margin-bottom: 4px;
+    }
+
+    .preview-info p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .instructions {
+      background: rgba(30, 41, 59, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
+      padding: 24px;
+    }
+
+    .instructions h3 {
+      font-size: 1.1rem;
+      margin-bottom: 12px;
+    }
+
+    .instructions ol {
+      padding-left: 20px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.8;
+    }
+
+    .instructions code {
+      background: rgba(0, 0, 0, 0.4);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #818cf8;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">TEST SANDBOX</div>
+      <h1>Clipboard Image Upload Extension</h1>
+      <p class="subtitle">Try copying any image, then click any file input below to test interception!</p>
+    </header>
+
+    <div class="grid">
+      <!-- Demo Input 1 -->
+      <div class="card">
+        <div class="card-title">📷 General Image Upload</div>
+        <div class="card-desc">Standard standard file input for attaching photos or screenshots.</div>
+
+        <div class="upload-zone">
+          <div class="upload-icon">📤</div>
+          <div>Click to upload file</div>
+          <div class="btn-upload">Select File</div>
+          <input type="file" id="input-demo-1" class="file-input" accept="image/*">
+        </div>
+
+        <div id="preview-1" class="preview-box">
+          <img id="thumb-1" class="preview-thumb" src="" alt="Selected Preview">
+          <div class="preview-info">
+            <h4 id="name-1">image.png</h4>
+            <p id="details-1">Size: -- | Type: --</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Demo Input 2 -->
+      <div class="card">
+        <div class="card-title">👤 Avatar / Profile Picture</div>
+        <div class="card-desc">Tests attachment with custom event listeners for profile updates.</div>
+
+        <div class="upload-zone">
+          <div class="upload-icon">🖼️</div>
+          <div>Upload new profile image</div>
+          <div class="btn-upload">Browse Image</div>
+          <input type="file" id="input-demo-2" class="file-input" accept="image/*">
+        </div>
+
+        <div id="preview-2" class="preview-box">
+          <img id="thumb-2" class="preview-thumb" src="" alt="Selected Preview">
+          <div class="preview-info">
+            <h4 id="name-2">image.png</h4>
+            <p id="details-2">Size: -- | Type: --</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="instructions">
+      <h3>🚀 How to Load & Test in Chrome / Edge:</h3>
+      <ol>
+        <li>Open Chrome and navigate to <code>chrome://extensions</code></li>
+        <li>Enable <strong>Developer mode</strong> (toggle switch in upper right corner).</li>
+        <li>Click <strong>Load unpacked</strong> and select this folder: <code>C:\Users\noorj\Desktop\Websites\Image clipboard</code></li>
+        <li>Copy any image to your system clipboard (e.g. Snipping Tool, Win+Shift+S, or Right Click -> Copy Image on any webpage).</li>
+        <li>Click the file upload zones above — the <strong>Clipboard Image Upload</strong> overlay will appear instantly showing your copied image(s)!</li>
+      </ol>
+    </div>
+  </div>
+
+  <script>
+    function setupInputListener(inputId, previewId, thumbId, nameId, detailsId) {
+      const input = document.getElementById(inputId);
+      const preview = document.getElementById(previewId);
+      const thumb = document.getElementById(thumbId);
+      const name = document.getElementById(nameId);
+      const details = document.getElementById(detailsId);
+
+      input.addEventListener('change', (e) => {
+        if (input.files && input.files[0]) {
+          const file = input.files[0];
+          name.textContent = file.name;
+          details.textContent = `${(file.size / 1024).toFixed(1)} KB | ${file.type || 'image'}`;
+          
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+            thumb.src = evt.target.result;
+            preview.classList.add('active');
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+    }
+
+    setupInputListener('input-demo-1', 'preview-1', 'thumb-1', 'name-1', 'details-1');
+    setupInputListener('input-demo-2', 'preview-2', 'thumb-2', 'name-2', 'details-2');
+  </script>
+</body>
+</html>

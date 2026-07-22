@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Clipboard & Downloads Upload Manager",
+  "version": "1.1.1",
+  "description": "Automatically presents recent clipboard images and downloaded files when uploading on any web page.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "clipboardRead",
+    "activeTab",
+    "offscreen",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "css": ["content.css"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Clipboard & Downloads"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["test.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

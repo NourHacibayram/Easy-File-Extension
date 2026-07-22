@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Clipboard Image Manager</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div class="logo">📋</div>
+      <div>
+        <h1>Clipboard Gallery</h1>
+        <p>Saved images for fast upload</p>
+      </div>
+    </div>
+    <button id="clear-all-btn" title="Clear all saved images" class="icon-btn">🗑️</button>
+  </div>
+
+  <div class="actions-bar">
+    <button id="sync-clipboard-btn" class="btn btn-primary">
+      <span>➕ Paste System Clipboard</span>
+    </button>
+    <button id="open-test-page" class="btn btn-secondary">
+      <span>🧪 Test Page</span>
+    </button>
+  </div>
+
+  <div class="site-toggle-bar">
+    <span id="site-status">Active on this site</span>
+    <button id="toggle-site-btn" class="site-toggle-btn">Enabled</button>
+  </div>
+
+  <div class="content">
+    <div id="image-grid" class="image-grid"></div>
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">🖼️</div>
+      <h3>No images saved yet</h3>
+      <p>Copy any image to your clipboard and click "Paste System Clipboard" or copy while browsing to save images here.</p>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Clipboard Image Upload Manager</span>
+    <span id="storage-count">0 images</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
