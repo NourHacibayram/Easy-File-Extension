@@ -74,6 +74,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
   const activeCount = document.getElementById('active-count');
   const hiddenCount = document.getElementById('hidden-count');
   const gallerySpinner = document.getElementById('gallery-spinner');
+  const gallerySummary = document.getElementById('gallery-summary');
   const content = document.querySelector('.content');
   const statusBanner = document.getElementById('status-banner');
   const statusTitle = document.getElementById('status-title');
@@ -244,6 +245,10 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     const hiddenImages = cachedImages.filter((image) => image.hidden);
     activeCount.textContent = String(activeImages.length);
     hiddenCount.textContent = String(hiddenImages.length);
+    const visibleCount = currentView === 'hidden' ? hiddenImages.length : activeImages.length;
+    gallerySummary.textContent = currentView === 'hidden'
+      ? `${visibleCount} protected`
+      : `${visibleCount} ready`;
     countSpan.textContent = `${galleryTotal} image${galleryTotal === 1 ? '' : 's'} saved locally`;
     clearButton.disabled = galleryTotal === 0;
   }

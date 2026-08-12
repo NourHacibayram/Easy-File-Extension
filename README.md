@@ -10,7 +10,7 @@ The gallery is stored locally, loads metadata before image data, and never sends
 
 - **Clipboard gallery:** Keep up to 50 recent Gallery images, protect important images from automatic rotation, and restore or delete individual items.
 - **On-demand clipboard sync:** Read the system clipboard only after an explicit popup action or an eligible upload interaction.
-- **Recent downloads:** Show real, bounded previews for supported image downloads, keep clear file-type cards for other formats, and attach a selected item when its original HTTP(S) URL can be fetched safely.
+- **Recent downloads:** Show real, bounded previews for supported image and video downloads, keep clear file-type cards for other formats, and attach a selected item when its original HTTP(S) URL can be fetched safely.
 - **Extension-owned upload picker:** Render the picker in an extension-origin iframe rather than in page-owned DOM.
 - **Keyboard shortcut:** Toggle the upload picker overlay instantly on any page with `Ctrl+Shift+V` (`Command+Shift+V` on macOS). Customize at `chrome://extensions/shortcuts`.
 - **Toolbar popup:** Access quick site controls, recent clipboard items, and protected images.
@@ -43,7 +43,7 @@ The first preview of an older image can take longer because its thumbnail may ne
 The upload picker provides three areas:
 
 - **Clipboard:** Active saved images, loaded from lightweight metadata and lazy thumbnails.
-- **Downloads:** Recent entries from the browser downloads history. Supported image files load small previews on demand; non-image files retain a clear type card.
+- **Downloads:** Recent entries from the browser downloads history. Supported image files and MP4/WebM/Ogg videos load small previews on demand; other files retain a clear type card.
 - **Protected:** Important gallery images that do not count toward the 50 recent-image rotation limit, loaded only when that section is opened.
 
 Choose an item to attach it to the page's upload target. Press `Esc`, use the close button, or click outside the picker to dismiss it. Use **Browse files** when a website requires the native picker or a recent download cannot be fetched.

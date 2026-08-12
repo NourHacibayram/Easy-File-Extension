@@ -33,6 +33,9 @@ const pickerSource = fs.readFileSync(path.join(__dirname, '..', 'picker.js'), 'u
 assert.match(pickerSource, /download\.previewable/);
 assert.match(pickerSource, /action: 'GET_DOWNLOAD_THUMBNAIL'/);
 assert.match(pickerSource, /preview\.dataset\.previewKind = 'download'/);
+assert.match(pickerSource, /download\.previewKind === 'video'/,
+  'video downloads must keep a visible media affordance after their thumbnail loads');
+assert.match(pickerSource, /badge\.textContent = 'Video'/);
 assert.match(pickerSource, /preview\.dataset\.previewKey = `clipboard:\$\{image\.id\}`/,
   'clipboard previews must retain a stable key after the shared preview queue is generalized');
 assert.match(pickerSource, /preview\.replaceWith\(createDownloadIcon/,

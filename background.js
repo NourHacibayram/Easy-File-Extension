@@ -10,18 +10,23 @@ const MAX_NEW_IMAGE_DATA_URL_LENGTH = Math.ceil(MAX_NEW_IMAGE_BYTES * 4 / 3) + 1
 const MAX_IMAGE_RESPONSE_LENGTH = 56 * 1024 * 1024;
 const LEGACY_RESPONSE_BUDGET = 24 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
-const MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES = 8 * 1024 * 1024;
-const MAX_DOWNLOAD_THUMBNAIL_SOURCE_DATA_URL_LENGTH = Math.ceil(MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES * 4 / 3) + 1024;
+const MAX_DOWNLOAD_IMAGE_PREVIEW_SOURCE_BYTES = 8 * 1024 * 1024;
+const MAX_DOWNLOAD_VIDEO_PREVIEW_SOURCE_BYTES = 16 * 1024 * 1024;
 const DOWNLOAD_THUMBNAIL_FETCH_TIMEOUT_MS = 8000;
 const DOWNLOAD_THUMBNAIL_RENDER_TIMEOUT_MS = 5000;
 const MAX_DOWNLOAD_THUMBNAIL_CACHE_ENTRIES = 24;
-const SUPPORTED_DOWNLOAD_PREVIEW_MIMES = new Set([
+const SUPPORTED_DOWNLOAD_IMAGE_PREVIEW_MIMES = new Set([
   'image/png',
   'image/jpeg',
   'image/webp',
   'image/gif',
   'image/bmp',
   'image/avif'
+]);
+const SUPPORTED_DOWNLOAD_VIDEO_PREVIEW_MIMES = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/ogg'
 ]);
 const MIGRATION_BATCH_RECORDS = 2;
 const MIGRATION_BATCH_BYTES = 24 * 1024 * 1024;
@@ -745,8 +750,8 @@ function getMimeFromExt(ext) {
   const mimes = {
     pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
     svg: 'image/svg+xml', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
-    avif: 'image/avif', mp4: 'video/mp4',
-    webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', zip: 'application/zip',
+    avif: 'image/avif', mp4: 'video/mp4', mov: 'video/quicktime',
+    webm: 'video/webm', ogv: 'video/ogg', mp3: 'audio/mpeg', wav: 'audio/wav', zip: 'application/zip',
     txt: 'text/plain', json: 'application/json'
   };
   return mimes[(ext || '').toLowerCase()] || 'application/octet-stream';
@@ -766,13 +771,24 @@ function getDownloadNameAndExt(item) {
 function supportedDownloadPreviewMime(value) {
   const mime = typeof value === 'string' ? value.split(';', 1)[0].trim().toLowerCase() : '';
   if (mime === 'image/jpg' || mime === 'image/pjpeg') return 'image/jpeg';
-  return SUPPORTED_DOWNLOAD_PREVIEW_MIMES.has(mime) ? mime : '';
+  return SUPPORTED_DOWNLOAD_IMAGE_PREVIEW_MIMES.has(mime) ? mime : '';
 }
 
-function getDownloadPreviewMime(item, ext = getDownloadNameAndExt(item).ext) {
+function supportedDownloadVideoPreviewMime(value) {
+  const mime = typeof value === 'string' ? value.split(';', 1)[0].trim().toLowerCase() : '';
+  return SUPPORTED_DOWNLOAD_VIDEO_PREVIEW_MIMES.has(mime) ? mime : '';
+}
+
+function getDownloadPreviewType(item, ext = getDownloadNameAndExt(item).ext) {
   const advertisedMime = supportedDownloadPreviewMime(item?.mime);
-  if (advertisedMime) return advertisedMime;
-  return supportedDownloadPreviewMime(getMimeFromExt(ext));
+  if (advertisedMime) return { kind: 'image', mime: advertisedMime };
+  const inferredImageMime = supportedDownloadPreviewMime(getMimeFromExt(ext));
+  if (inferredImageMime) return { kind: 'image', mime: inferredImageMime };
+
+  const advertisedVideoMime = supportedDownloadVideoPreviewMime(item?.mime);
+  if (advertisedVideoMime) return { kind: 'video', mime: advertisedVideoMime };
+  const inferredVideoMime = supportedDownloadVideoPreviewMime(getMimeFromExt(ext));
+  return inferredVideoMime ? { kind: 'video', mime: inferredVideoMime } : null;
 }
 
 function downloadPreviewFingerprint(item) {
@@ -824,15 +840,18 @@ function promiseWithTimeout(promise, timeoutMs, error) {
   });
 }
 
-async function fetchDownloadPreviewSource(item, previewMime) {
+async function fetchDownloadPreviewSource(item, previewType) {
+  const maxBytes = previewType.kind === 'video'
+    ? MAX_DOWNLOAD_VIDEO_PREVIEW_SOURCE_BYTES
+    : MAX_DOWNLOAD_IMAGE_PREVIEW_SOURCE_BYTES;
   const knownSize = Number(item.fileSize);
-  if (Number.isFinite(knownSize) && knownSize > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES) {
-    throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+  if (Number.isFinite(knownSize) && knownSize > maxBytes) {
+    throw makeDownloadPreviewError(`This ${previewType.kind} is too large for a quick preview.`, 'DOWNLOAD_PREVIEW_TOO_LARGE');
   }
 
   const url = item.finalUrl || item.url;
   if (!/^https?:\/\//i.test(url || '')) {
-    throw makeDownloadPreviewError('This image cannot be previewed from its download source.', 'DOWNLOAD_PREVIEW_UNAVAILABLE');
+    throw makeDownloadPreviewError('This file cannot be previewed from its download source.', 'DOWNLOAD_PREVIEW_UNAVAILABLE');
   }
 
   const controller = new AbortController();
@@ -854,16 +873,19 @@ async function fetchDownloadPreviewSource(item, previewMime) {
     const rangeTotalMatch = contentRange.match(/\/(\d+)$/);
     const rangeTotal = rangeTotalMatch ? Number(rangeTotalMatch[1]) : NaN;
     const advertisedLength = Number(response.headers.get('content-length'));
-    if ((Number.isFinite(rangeTotal) && rangeTotal > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES)
-        || (Number.isFinite(advertisedLength) && advertisedLength > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES)) {
-      throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+    if ((Number.isFinite(rangeTotal) && rangeTotal > maxBytes)
+        || (Number.isFinite(advertisedLength) && advertisedLength > maxBytes)) {
+      throw makeDownloadPreviewError(`This ${previewType.kind} is too large for a quick preview.`, 'DOWNLOAD_PREVIEW_TOO_LARGE');
     }
 
     const responseTypeHeader = response.headers.get('content-type') || '';
-    const responseType = supportedDownloadPreviewMime(responseTypeHeader);
+    const responseImageMime = supportedDownloadPreviewMime(responseTypeHeader);
+    const responseVideoMime = supportedDownloadVideoPreviewMime(responseTypeHeader);
+    const responseType = responseImageMime || responseVideoMime;
     const normalizedHeader = responseTypeHeader.split(';', 1)[0].trim().toLowerCase();
-    if (normalizedHeader && normalizedHeader !== 'application/octet-stream' && !responseType) {
-      throw makeDownloadPreviewError('The download source did not return a supported image.', 'UNSUPPORTED_DOWNLOAD_PREVIEW');
+    if (normalizedHeader && normalizedHeader !== 'application/octet-stream'
+        && (!responseType || (previewType.kind === 'image' ? !responseImageMime : !responseVideoMime))) {
+      throw makeDownloadPreviewError('The download source did not return the expected preview format.', 'UNSUPPORTED_DOWNLOAD_PREVIEW');
     }
 
     const chunks = [];
@@ -874,34 +896,35 @@ async function fetchDownloadPreviewSource(item, previewMime) {
         const { done, value } = await reader.read();
         if (done) break;
         receivedBytes += value.byteLength;
-        if (receivedBytes > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES) {
+        if (receivedBytes > maxBytes) {
           await reader.cancel();
-          throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+          throw makeDownloadPreviewError(`This ${previewType.kind} is too large for a quick preview.`, 'DOWNLOAD_PREVIEW_TOO_LARGE');
         }
         chunks.push(value);
       }
     } else {
       const buffer = await response.arrayBuffer();
       receivedBytes = buffer.byteLength;
-      if (receivedBytes > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES) {
-        throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+      if (receivedBytes > maxBytes) {
+        throw makeDownloadPreviewError(`This ${previewType.kind} is too large for a quick preview.`, 'DOWNLOAD_PREVIEW_TOO_LARGE');
       }
       chunks.push(buffer);
     }
     if (receivedBytes === 0) {
-      throw makeDownloadPreviewError('The downloaded image is empty.', 'DOWNLOAD_PREVIEW_UNAVAILABLE');
+      throw makeDownloadPreviewError('The downloaded file is empty.', 'DOWNLOAD_PREVIEW_UNAVAILABLE');
     }
 
-    const sourceDataUrl = await blobToDataURL(new Blob(chunks, { type: responseType || previewMime }));
+    const sourceDataUrl = await blobToDataURL(new Blob(chunks, { type: responseType || previewType.mime }));
+    const maxDataUrlLength = Math.ceil(maxBytes * 4 / 3) + 1024;
     if (typeof sourceDataUrl !== 'string'
-        || !sourceDataUrl.startsWith('data:image/')
-        || sourceDataUrl.length > MAX_DOWNLOAD_THUMBNAIL_SOURCE_DATA_URL_LENGTH) {
-      throw makeDownloadPreviewError('The image preview source is invalid.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+        || !sourceDataUrl.startsWith(`data:${previewType.kind}/`)
+        || sourceDataUrl.length > maxDataUrlLength) {
+      throw makeDownloadPreviewError('The media preview source is invalid.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
     }
     return sourceDataUrl;
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw makeDownloadPreviewError('Image preview timed out.', 'DOWNLOAD_PREVIEW_TIMEOUT');
+      throw makeDownloadPreviewError('Media preview timed out.', 'DOWNLOAD_PREVIEW_TIMEOUT');
     }
     throw error;
   } finally {
@@ -909,23 +932,23 @@ async function fetchDownloadPreviewSource(item, previewMime) {
   }
 }
 
-async function createDownloadThumbnail(item, previewMime) {
-  const sourceDataUrl = await fetchDownloadPreviewSource(item, previewMime);
+async function createDownloadThumbnail(item, previewType) {
+  const sourceDataUrl = await fetchDownloadPreviewSource(item, previewType);
   return enqueueOffscreenOperation(async () => {
     try {
       await setupOffscreenDocument('offscreen.html');
       const response = await promiseWithTimeout(
         chrome.runtime.sendMessage({
           target: 'offscreen',
-          action: 'CREATE_THUMBNAIL',
+          action: previewType.kind === 'video' ? 'CREATE_VIDEO_THUMBNAIL' : 'CREATE_THUMBNAIL',
           dataUrl: sourceDataUrl
         }),
         DOWNLOAD_THUMBNAIL_RENDER_TIMEOUT_MS,
-        makeDownloadPreviewError('Image preview rendering timed out.', 'DOWNLOAD_PREVIEW_TIMEOUT')
+        makeDownloadPreviewError('Media preview rendering timed out.', 'DOWNLOAD_PREVIEW_TIMEOUT')
       );
       if (!response?.success || !validThumbnailDataUrl(response.thumbnailDataUrl)) {
         throw makeDownloadPreviewError(
-          response?.error || 'Could not create an image preview.',
+          response?.error || 'Could not create a media preview.',
           'DOWNLOAD_PREVIEW_RENDER_FAILED'
         );
       }
@@ -943,9 +966,9 @@ async function getDownloadThumbnail(downloadId) {
     throw makeDownloadPreviewError('Download is unavailable.', 'DOWNLOAD_NOT_FOUND');
   }
   const { ext } = getDownloadNameAndExt(item);
-  const previewMime = getDownloadPreviewMime(item, ext);
-  if (!previewMime) {
-    throw makeDownloadPreviewError('This file type does not support an image preview.', 'UNSUPPORTED_DOWNLOAD_PREVIEW');
+  const previewType = getDownloadPreviewType(item, ext);
+  if (!previewType) {
+    throw makeDownloadPreviewError('This file type does not support a preview.', 'UNSUPPORTED_DOWNLOAD_PREVIEW');
   }
 
   const fingerprint = downloadPreviewFingerprint(item);
@@ -957,7 +980,7 @@ async function getDownloadThumbnail(downloadId) {
   }
   if (downloadThumbnailRequests.has(fingerprint)) return downloadThumbnailRequests.get(fingerprint);
 
-  const request = createDownloadThumbnail(item, previewMime)
+  const request = createDownloadThumbnail(item, previewType)
     .then((thumbnailDataUrl) => {
       rememberDownloadThumbnail(fingerprint, thumbnailDataUrl);
       return thumbnailDataUrl;
@@ -1331,7 +1354,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           mime,
           fileSize: item.fileSize || 0,
           category: getFileTypeCategory(ext, item.mime),
-          previewable: !!getDownloadPreviewMime(item, ext),
+          previewKind: getDownloadPreviewType(item, ext)?.kind || '',
+          previewable: !!getDownloadPreviewType(item, ext),
           startTime: item.startTime
         };
       });

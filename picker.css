@@ -648,6 +648,24 @@ button:focus-visible,
   transition: opacity 150ms ease, transform 150ms ease;
 }
 
+.media-badge {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  left: 8px;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(11, 13, 20, 0.72);
+  color: #f5f7fb;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
 .tile:hover .tile-square::after,
 .tile:focus-visible .tile-square::after {
   transform: translateY(0);

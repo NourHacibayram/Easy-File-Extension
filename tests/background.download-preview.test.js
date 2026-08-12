@@ -30,12 +30,23 @@ const oversizedDownload = {
   fileSize: 9 * 1024 * 1024,
   finalUrl: 'https://files.example/huge.png'
 };
-const downloads = [imageDownload, jsonDownload, oversizedDownload];
+const videoDownload = {
+  id: 10,
+  filename: 'C:\\Downloads\\walkthrough.mp4',
+  mime: 'video/mp4',
+  fileSize: 12,
+  state: 'complete',
+  exists: true,
+  startTime: '2026-08-12T11:00:00.000Z',
+  finalUrl: 'https://files.example/walkthrough.mp4'
+};
+const downloads = [imageDownload, jsonDownload, oversizedDownload, videoDownload];
 const storage = new Map();
 let messageListener;
 let fetchCount = 0;
 let thumbnailRenderCount = 0;
 let lastThumbnailSource = '';
+let lastThumbnailAction = '';
 let fetchMode = 'image';
 
 function searchDownloads(query, callback) {
@@ -55,9 +66,11 @@ const chrome = {
     getURL(file = '') { return `chrome-extension://test-extension/${file}`; },
     async getContexts() { return []; },
     async sendMessage(message) {
-      if (message.target === 'offscreen' && message.action === 'CREATE_THUMBNAIL') {
+      if (message.target === 'offscreen'
+          && (message.action === 'CREATE_THUMBNAIL' || message.action === 'CREATE_VIDEO_THUMBNAIL')) {
         thumbnailRenderCount++;
         lastThumbnailSource = message.dataUrl;
+        lastThumbnailAction = message.action;
         return { success: true, thumbnailDataUrl: 'data:image/webp;base64,VEhVTUI=' };
       }
       return { success: true };
@@ -102,7 +115,7 @@ class FakeFileReader {
   }
 }
 
-async function fetchStub() {
+async function fetchStub(url) {
   fetchCount++;
   if (fetchMode === 'html') {
     return new Response('<html>login</html>', {
@@ -110,9 +123,10 @@ async function fetchStub() {
       headers: { 'content-type': 'text/html', 'content-length': '18' }
     });
   }
-  return new Response(new Uint8Array([137, 80, 78, 71, 1, 2, 3, 4]), {
+  const isVideo = String(url).endsWith('.mp4');
+  return new Response(new Uint8Array(isVideo ? [0, 0, 0, 24, 102, 116, 121, 112] : [137, 80, 78, 71, 1, 2, 3, 4]), {
     status: 200,
-    headers: { 'content-type': 'image/png', 'content-length': '8' }
+    headers: { 'content-type': isVideo ? 'video/mp4' : 'image/png', 'content-length': '8' }
   });
 }
 
@@ -153,6 +167,8 @@ function send(message, sender = {
   assert.equal(list.success, true);
   assert.equal(list.downloads.find((item) => item.id === 7).previewable, true);
   assert.equal(list.downloads.find((item) => item.id === 8).previewable, false);
+  assert.equal(list.downloads.find((item) => item.id === 10).previewable, true);
+  assert.equal(list.downloads.find((item) => item.id === 10).previewKind, 'video');
 
   const [firstPreview, duplicatePreview] = await Promise.all([
     send({ action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: 7 }),
@@ -173,15 +189,20 @@ function send(message, sender = {
   assert.equal(fetchCount, 1, 'memory-cached thumbnails do not refetch originals');
   assert.equal(thumbnailRenderCount, 1);
 
+  const videoPreview = await send({ action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: 10 });
+  assert.equal(videoPreview.success, true);
+  assert.equal(lastThumbnailAction, 'CREATE_VIDEO_THUMBNAIL');
+  assert.ok(lastThumbnailSource.startsWith('data:video/mp4;base64,'));
+
   const nonImage = await send({ action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: 8 });
   assert.equal(nonImage.success, false);
   assert.equal(nonImage.code, 'UNSUPPORTED_DOWNLOAD_PREVIEW');
-  assert.equal(fetchCount, 1, 'non-image downloads never fetch preview data');
+  assert.equal(fetchCount, 2, 'non-image downloads never fetch preview data');
 
   const oversized = await send({ action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: 9 });
   assert.equal(oversized.success, false);
   assert.equal(oversized.code, 'DOWNLOAD_PREVIEW_TOO_LARGE');
-  assert.equal(fetchCount, 1, 'known oversized downloads are rejected before fetching');
+  assert.equal(fetchCount, 2, 'known oversized downloads are rejected before fetching');
 
   const invalidSender = await send(
     { action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: 7 },
@@ -197,7 +218,7 @@ function send(message, sender = {
   const wrongType = await send({ action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: 7 });
   assert.equal(wrongType.success, false);
   assert.equal(wrongType.code, 'UNSUPPORTED_DOWNLOAD_PREVIEW');
-  assert.equal(thumbnailRenderCount, 1);
+  assert.equal(thumbnailRenderCount, 2);
 
   fetchMode = 'image';
   const selection = await send({ action: 'FETCH_DOWNLOAD_DATA', downloadId: 7 });

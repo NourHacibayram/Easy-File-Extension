@@ -116,6 +116,32 @@ button:disabled {
   font-size: 11.5px;
 }
 
+.privacy-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  margin-right: 9px;
+  padding: 5px 7px;
+  color: #9ce9c8;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.16);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.privacy-badge > span {
+  color: var(--success);
+  font-size: 8px;
+}
+
+.topbar .clear-button {
+  margin-left: 0;
+}
+
 .icon-button {
   display: grid;
   place-items: center;
@@ -341,19 +367,37 @@ button:disabled {
 }
 
 .gallery-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
-  min-height: 48px;
+  min-height: 54px;
   padding: 8px 16px;
   background: rgba(8, 13, 24, 0.44);
   border-top: 1px solid rgba(148, 163, 184, 0.07);
   border-bottom: 1px solid var(--border);
 }
 
+.gallery-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-right: 10px;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.gallery-heading small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 560;
+}
+
 .view-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  width: 226px;
+  width: 190px;
   padding: 3px;
   background: rgba(148, 163, 184, 0.075);
   border: 1px solid rgba(148, 163, 184, 0.09);

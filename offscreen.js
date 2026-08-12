@@ -22,6 +22,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
+
+  if (message.action === 'CREATE_VIDEO_THUMBNAIL') {
+    createVideoThumbnail(message.dataUrl)
+      .then((thumbnailDataUrl) => sendResponse({ success: true, thumbnailDataUrl }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
 });
 
 async function readClipboardImage() {
@@ -174,6 +181,75 @@ function createThumbnail(dataUrl, maxDimension = 240) {
     };
     image.onerror = () => reject(new Error('Could not decode image preview.'));
     image.src = dataUrl;
+  });
+}
+
+function createVideoThumbnail(dataUrl, maxDimension = 240) {
+  return new Promise((resolve, reject) => {
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:video/')) {
+      reject(new Error('Invalid video preview source.'));
+      return;
+    }
+
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    let settled = false;
+    let timeoutId = null;
+    const cleanup = () => {
+      video.removeAttribute('src');
+      video.load();
+      video.remove();
+    };
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      cleanup();
+      reject(new Error(message));
+    };
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      cleanup();
+      resolve(value);
+    };
+    const capture = () => {
+      const sourceWidth = video.videoWidth;
+      const sourceHeight = video.videoHeight;
+      if (!sourceWidth || !sourceHeight) return fail('Video dimensions are unavailable.');
+      const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      const context = canvas.getContext('2d');
+      if (!context) return fail('Canvas is unavailable.');
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (!blob) return fail('Could not encode video preview.');
+        blobToDataURL(blob).then(finish, (error) => fail(error.message || 'Could not encode video preview.'));
+      }, 'image/webp', 0.72);
+    };
+    const seekToPreviewFrame = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const target = duration > 0.2 ? Math.min(1, Math.max(0.1, duration * 0.1)) : 0;
+      if (target === 0) return capture();
+      try {
+        video.currentTime = target;
+      } catch (error) {
+        fail('Could not seek this video.');
+      }
+    };
+    timeoutId = setTimeout(() => fail('Video preview timed out.'), 4500);
+    video.addEventListener('loadedmetadata', seekToPreviewFrame, { once: true });
+    video.addEventListener('seeked', capture, { once: true });
+    video.addEventListener('error', () => fail('Could not decode this video.'), { once: true });
+    document.body.appendChild(video);
+    video.src = dataUrl;
+    video.load();
   });
 }
 

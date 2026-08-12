@@ -16,6 +16,9 @@
         <h1>Clipboard Gallery</h1>
         <p>Private, local, ready to upload</p>
       </div>
+      <span class="privacy-badge" title="Your gallery stays on this device">
+        <span aria-hidden="true">●</span> Local only
+      </span>
       <button id="clear-all-btn" class="icon-button clear-button" type="button" aria-label="Clear all saved images" title="Clear all saved images" disabled>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M4 7h16M9 7V4.75A.75.75 0 0 1 9.75 4h4.5a.75.75 0 0 1 .75.75V7m-8.5 0 .75 12h9.5l.75-12M10 11v4.5M14 11v4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
@@ -52,6 +55,10 @@
     </section>
 
     <nav class="gallery-toolbar" aria-label="Gallery views">
+      <div class="gallery-heading">
+        <span>Saved images</span>
+        <small id="gallery-summary">0 available</small>
+      </div>
       <div class="view-tabs" role="tablist" aria-label="Saved image views">
         <button id="active-tab-btn" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="image-grid">
           Gallery <span id="active-count" class="tab-count">0</span>

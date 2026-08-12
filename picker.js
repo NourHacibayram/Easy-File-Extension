@@ -416,6 +416,12 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
         preview.dataset.previewFallback = getDownloadLabel(download);
         preview.dataset.previewState = 'waiting';
         square.appendChild(preview);
+        if (download.previewKind === 'video') {
+          const badge = document.createElement('span');
+          badge.className = 'media-badge';
+          badge.textContent = 'Video';
+          square.appendChild(badge);
+        }
       } else {
         square.appendChild(createDownloadIcon(getDownloadLabel(download)));
       }
