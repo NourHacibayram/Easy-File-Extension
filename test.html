@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Clipboard Image Upload Extension Test Sandbox</title>
+  <link rel="stylesheet" href="content.css">
   <style>
     :root {
       --bg: #0b0f19;
@@ -219,7 +220,7 @@
       <!-- Demo Input 1 -->
       <div class="card">
         <div class="card-title">📷 General Image Upload</div>
-        <div class="card-desc">Standard standard file input for attaching photos or screenshots.</div>
+        <div class="card-desc">Standard file input for attaching photos or screenshots.</div>
 
         <div class="upload-zone">
           <div class="upload-icon">📤</div>
@@ -264,39 +265,14 @@
       <ol>
         <li>Open Chrome and navigate to <code>chrome://extensions</code></li>
         <li>Enable <strong>Developer mode</strong> (toggle switch in upper right corner).</li>
-        <li>Click <strong>Load unpacked</strong> and select this folder: <code>C:\Users\noorj\Desktop\Websites\Image clipboard</code></li>
+        <li>Click <strong>Load unpacked</strong> and select this project folder.</li>
         <li>Copy any image to your system clipboard (e.g. Snipping Tool, Win+Shift+S, or Right Click -> Copy Image on any webpage).</li>
         <li>Click the file upload zones above — the <strong>Clipboard Image Upload</strong> overlay will appear instantly showing your copied image(s)!</li>
       </ol>
     </div>
   </div>
 
-  <script>
-    function setupInputListener(inputId, previewId, thumbId, nameId, detailsId) {
-      const input = document.getElementById(inputId);
-      const preview = document.getElementById(previewId);
-      const thumb = document.getElementById(thumbId);
-      const name = document.getElementById(nameId);
-      const details = document.getElementById(detailsId);
-
-      input.addEventListener('change', (e) => {
-        if (input.files && input.files[0]) {
-          const file = input.files[0];
-          name.textContent = file.name;
-          details.textContent = `${(file.size / 1024).toFixed(1)} KB | ${file.type || 'image'}`;
-          
-          const reader = new FileReader();
-          reader.onload = (evt) => {
-            thumb.src = evt.target.result;
-            preview.classList.add('active');
-          };
-          reader.readAsDataURL(file);
-        }
-      });
-    }
-
-    setupInputListener('input-demo-1', 'preview-1', 'thumb-1', 'name-1', 'details-1');
-    setupInputListener('input-demo-2', 'preview-2', 'thumb-2', 'name-2', 'details-2');
-  </script>
+  <script src="content.js"></script>
+  <script src="test.js"></script>
 </body>
 </html>

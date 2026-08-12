@@ -1,48 +1,106 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Clipboard Image Manager</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clipboard Gallery</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="header">
-    <div class="brand">
-      <div class="logo">📋</div>
-      <div>
-        <h1>Clipboard Gallery</h1>
-        <p>Saved images for fast upload</p>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M9 5.5h6M9.75 3h4.5A1.75 1.75 0 0 1 16 4.75v1.5H8v-1.5A1.75 1.75 0 0 1 9.75 3Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          <path d="M7 5.5H5.75A1.75 1.75 0 0 0 4 7.25v11A1.75 1.75 0 0 0 5.75 20h12a1.75 1.75 0 0 0 1.75-1.75v-11A1.75 1.75 0 0 0 17.75 5.5H16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          <path d="m7.5 16 2.75-3 2.1 2.1 1.65-1.85 2.5 2.75" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
       </div>
-    </div>
-    <button id="clear-all-btn" title="Clear all saved images" class="icon-btn">🗑️</button>
-  </div>
+      <div class="brand-copy">
+        <h1>Clipboard Gallery</h1>
+        <p>Private, local, ready to upload</p>
+      </div>
+      <button id="clear-all-btn" class="icon-button clear-button" type="button" aria-label="Clear all saved images" title="Clear all saved images" disabled>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 7h16M9 7V4.75A.75.75 0 0 1 9.75 4h4.5a.75.75 0 0 1 .75.75V7m-8.5 0 .75 12h9.5l.75-12M10 11v4.5M14 11v4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </header>
 
-  <div class="actions-bar">
-    <button id="sync-clipboard-btn" class="btn btn-primary">
-      <span>➕ Paste System Clipboard</span>
-    </button>
-    <button id="open-test-page" class="btn btn-secondary">
-      <span>🧪 Test Page</span>
-    </button>
-  </div>
+    <section class="quick-actions" aria-label="Clipboard actions">
+      <button id="sync-clipboard-btn" class="sync-button" type="button">
+        <span class="sync-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M9 5.5h6M9.75 3h4.5A1.75 1.75 0 0 1 16 4.75v1.5H8v-1.5A1.75 1.75 0 0 1 9.75 3Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M7 5.5H5.75A1.75 1.75 0 0 0 4 7.25v11A1.75 1.75 0 0 0 5.75 20h12a1.75 1.75 0 0 0 1.75-1.75v-11A1.75 1.75 0 0 0 17.75 5.5H16M12 10v6m-3-3h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span class="sync-copy">
+          <strong id="sync-label">Add from clipboard</strong>
+          <small id="sync-hint">Save the image you copied</small>
+        </span>
+        <span id="sync-spinner" class="spinner sync-spinner" hidden aria-hidden="true"></span>
+        <svg class="sync-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="m9 5 7 7-7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
 
-  <div class="site-toggle-bar">
-    <span id="site-status">Active on this site</span>
-    <button id="toggle-site-btn" class="site-toggle-btn">Enabled</button>
-  </div>
+      <button id="toggle-site-btn" class="site-control" type="button" aria-pressed="true">
+        <span class="site-dot" aria-hidden="true"></span>
+        <span class="site-copy">
+          <strong id="site-toggle-label">Enabled on this site</strong>
+          <span id="site-status" role="status">Checking current website…</span>
+        </span>
+        <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+      </button>
+    </section>
 
-  <div class="content">
-    <div id="image-grid" class="image-grid"></div>
-    <div id="empty-state" class="empty-state">
-      <div class="empty-icon">🖼️</div>
-      <h3>No images saved yet</h3>
-      <p>Copy any image to your clipboard and click "Paste System Clipboard" or copy while browsing to save images here.</p>
-    </div>
-  </div>
+    <nav class="gallery-toolbar" aria-label="Gallery views">
+      <div class="view-tabs" role="tablist" aria-label="Saved image views">
+        <button id="active-tab-btn" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="image-grid">
+          Gallery <span id="active-count" class="tab-count">0</span>
+        </button>
+        <button id="toggle-vault-btn" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="image-grid">
+          Hidden <span id="hidden-count" class="tab-count">0</span>
+        </button>
+      </div>
+      <span id="gallery-spinner" class="spinner toolbar-spinner" hidden aria-label="Refreshing gallery"></span>
+    </nav>
 
-  <div class="footer">
-    <span>Clipboard Image Upload Manager</span>
-    <span id="storage-count">0 images</span>
+    <main class="content">
+      <section id="status-banner" class="status-banner" aria-live="polite" hidden>
+        <span id="status-icon" class="status-icon" aria-hidden="true"></span>
+        <div class="status-copy">
+          <strong id="status-title"></strong>
+          <span id="status-detail"></span>
+          <div id="migration-progress" class="progress-track" hidden>
+            <span id="migration-progress-bar" class="progress-bar"></span>
+          </div>
+        </div>
+        <button id="retry-load-btn" class="retry-button" type="button" hidden>Retry</button>
+      </section>
+
+      <div id="skeleton-grid" class="image-grid skeleton-grid" aria-label="Loading saved images"></div>
+      <div id="image-grid" class="image-grid" aria-live="polite" hidden></div>
+
+      <section id="empty-state" class="empty-state" hidden>
+        <div class="empty-illustration" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none">
+            <rect x="10" y="14" width="44" height="38" rx="10" stroke="currentColor" stroke-width="2.5"/>
+            <path d="m18 43 10-11 7.5 7.5 6-7L49 41" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="43" cy="25" r="4" fill="currentColor"/>
+          </svg>
+        </div>
+        <h2 id="empty-title">Your gallery is ready</h2>
+        <p id="empty-description">Copy an image, then add it from your clipboard.</p>
+        <button id="empty-sync-btn" class="empty-action" type="button">Add first image</button>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span class="local-note"><span class="local-dot" aria-hidden="true"></span><span id="storage-count" role="status" aria-live="polite">0 images saved locally</span></span>
+      <button id="open-test-page" class="diagnostics-button" type="button">Test uploader</button>
+    </footer>
   </div>
 
   <script src="popup.js"></script>
