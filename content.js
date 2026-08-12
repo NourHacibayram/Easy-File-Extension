@@ -1,9 +1,28 @@
-(function () {
+function isExpectedPickerMessageEvent(event, session) {
+  if (!event || !session || event.origin !== session.origin) return false;
+
+  // Chromium deliberately reports `source` as null for some messages sent by
+  // extension documents. When it is available, still require the exact picker
+  // window; when it is not, the dynamic extension origin and 128-bit session
+  // capability below remain the authentication boundary.
+  if (event.source !== null && event.source !== session.contentWindow) return false;
+
+  const message = event.data;
+  return !!message
+    && typeof message === 'object'
+    && message.token === session.token
+    && message.parentOrigin === session.parentOrigin
+    && typeof message.type === 'string';
+}
+
+if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
+  (function () {
   let targetInput = null;
   let activeModal = null;
   let pickerFrame = null;
   let pickerToken = '';
   let pickerParentOrigin = '';
+  let pickerMessageOrigin = '';
   let selectionInProgress = false;
   let isBypassing = false;
   // Interception stays disabled until the background confirms this site's
@@ -16,8 +35,6 @@
 
   const MAX_CAPTURE_BYTES = 6 * 1024 * 1024;
   const pickerUrl = chrome.runtime.getURL('picker.html');
-  const parsedPickerUrl = new URL(pickerUrl);
-  const pickerOrigin = `${parsedPickerUrl.protocol}//${parsedPickerUrl.host}`;
 
   chrome.runtime.sendMessage({ action: 'GET_DOMAIN_STATE' })
     .then((response) => {
@@ -381,14 +398,18 @@
   }
 
   function postToPicker(message) {
-    if (!pickerFrame?.contentWindow || !pickerToken) return;
-    pickerFrame.contentWindow.postMessage({ ...message, token: pickerToken }, pickerOrigin);
+    if (!pickerFrame?.contentWindow || !pickerToken || !pickerMessageOrigin) return;
+    pickerFrame.contentWindow.postMessage({ ...message, token: pickerToken }, pickerMessageOrigin);
   }
 
   function handlePickerMessage(event) {
-    if (!activeModal || !pickerFrame || event.source !== pickerFrame.contentWindow || event.origin !== pickerOrigin) return;
+    if (!activeModal || !pickerFrame || !isExpectedPickerMessageEvent(event, {
+      contentWindow: pickerFrame.contentWindow,
+      origin: pickerMessageOrigin,
+      token: pickerToken,
+      parentOrigin: pickerParentOrigin
+    })) return;
     const message = event.data;
-    if (!message || typeof message !== 'object' || message.token !== pickerToken || message.parentOrigin !== pickerParentOrigin || typeof message.type !== 'string') return;
 
     if (message.type === 'CIP_PICK_IMAGE') {
       if (selectionInProgress || typeof message.imageId !== 'string' || message.imageId.length > 256) return;
@@ -436,6 +457,10 @@
     frame.title = 'Clipboard and downloads picker';
     const pickerParams = new URLSearchParams({ token: pickerToken, parentOrigin: pickerParentOrigin });
     frame.src = `${pickerUrl}?${pickerParams}`;
+    // With use_dynamic_url enabled this is a per-browser-session extension
+    // origin, not necessarily the installed extension ID. Validate and target
+    // messages against the exact URL assigned to this picker instance.
+    pickerMessageOrigin = new URL(frame.src).origin;
     frame.referrerPolicy = 'no-referrer';
     frame.style.cssText = [
       'display:block',
@@ -463,7 +488,7 @@
   }
 
   function handleEscKey(event) {
-    if (event.key === 'Escape') closeClipboardPickerModal();
+    if (event.isTrusted && event.key === 'Escape') closeClipboardPickerModal();
   }
 
   function closeClipboardPickerModal() {
@@ -472,6 +497,7 @@
     pickerFrame = null;
     pickerToken = '';
     pickerParentOrigin = '';
+    pickerMessageOrigin = '';
     if (!activeModal) return;
 
     const modalToClose = activeModal;
@@ -552,4 +578,9 @@
       image.src = dataUrl;
     });
   }
-})();
+  })();
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { isExpectedPickerMessageEvent };
+}

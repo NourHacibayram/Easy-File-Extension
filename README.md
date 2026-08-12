@@ -4,9 +4,11 @@ A Manifest V3 extension for Chrome, Edge, and Brave that makes repeated uploads 
 
 The gallery is stored locally, loads metadata before image data, and never sends the complete gallery through one extension message.
 
+![Clipboard Gallery popup showing the recent Gallery and Protected views](docs/clipboard-gallery-popup.png)
+
 ## Main features
 
-- **Clipboard gallery:** Save up to 50 recent clipboard images and hide, restore, or delete individual items.
+- **Clipboard gallery:** Keep up to 50 recent Gallery images, protect important images from automatic rotation, and restore or delete individual items.
 - **On-demand clipboard sync:** Read the system clipboard only after an explicit popup action or an eligible upload interaction.
 - **Recent downloads:** Show recent browser-download metadata and attach a selected item when its original HTTP(S) URL can be fetched safely.
 - **Extension-owned upload picker:** Render the picker in an extension-origin iframe rather than in page-owned DOM.
@@ -20,8 +22,8 @@ The redesigned popup separates controls, status, and gallery content:
 
 - **Add from clipboard** shows a busy state while an image is read and reports whether it was saved or was already the newest item.
 - The **site switch** shows the active hostname and immediately enables or disables interception on that site.
-- **Gallery** and **Hidden** tabs include live counts.
-- Image cards expose hide/restore and delete actions without rebuilding the entire gallery.
+- **Gallery** and **Protected** tabs include live counts.
+- Image cards expose protect/restore and delete actions without rebuilding the entire gallery.
 - Clearing the gallery requires a second click on the trash button to reduce accidental deletion.
 - The footer reports how many images are stored locally and links to the test uploader.
 
@@ -41,7 +43,7 @@ The upload picker provides three areas:
 
 - **Clipboard:** Active saved images, loaded from lightweight metadata and lazy thumbnails.
 - **Downloaded:** Recent entries from the browser downloads history.
-- **Hidden:** Hidden gallery images, loaded only when that section is opened.
+- **Protected:** Important gallery images that do not count toward the 50 recent-image rotation limit, loaded only when that section is opened.
 
 Choose an item to attach it to the page's upload target. Press `Esc`, use the close button, or click outside the picker to dismiss it. Use **Show all files** when a website requires the native picker or a recent download cannot be fetched.
 
@@ -49,7 +51,7 @@ Choose an item to attach it to the page's upload target. Press `Esc`, use the cl
 
 Images are no longer kept in one large `clipboardImages` array. The current format uses:
 
-- a small metadata index for ordering, dimensions, timestamps, and hidden state;
+- a small metadata index for ordering, dimensions, timestamps, and protected state;
 - one storage record per original image;
 - one separate, bounded storage record per generated thumbnail.
 

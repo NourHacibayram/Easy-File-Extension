@@ -1,4 +1,5 @@
-const MAX_IMAGES = 50;
+const MAX_ACTIVE_IMAGES = 50;
+const MAX_IMAGE_LIST_PAGE_SIZE = 50;
 const IMAGE_INDEX_KEY = 'clipboardImageIndexV2';
 const LEGACY_IMAGES_KEY = 'clipboardImages';
 const IMAGE_MIGRATION_KEY = 'clipboardImageMigrationV2';
@@ -237,6 +238,27 @@ function publicMetadata(item) {
     hidden: item.hidden,
     dataLength: item.dataLength,
     available: item.dataLength > 0 && item.dataLength <= MAX_IMAGE_RESPONSE_LENGTH
+  };
+}
+
+function enforceActiveImageLimit(index, protectedIds = []) {
+  const protectedSet = new Set(protectedIds);
+  const overflow = index.filter((item) => !item.hidden).length - MAX_ACTIVE_IMAGES;
+  if (overflow <= 0) return { index, removed: [] };
+
+  // Timestamps define age; the index position is a deterministic fallback for
+  // legacy records with equal timestamps. Hidden records are never candidates.
+  const candidates = index
+    .map((item, position) => ({ item, position }))
+    .filter(({ item }) => !item.hidden && !protectedSet.has(item.id))
+    .sort((left, right) =>
+      left.item.timestamp - right.item.timestamp || right.position - left.position
+    );
+  const removed = candidates.slice(0, overflow).map(({ item }) => item);
+  const removedIds = new Set(removed.map((item) => item.id));
+  return {
+    index: index.filter((item) => !removedIds.has(item.id)),
+    removed
   };
 }
 
@@ -769,7 +791,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     ensureImageStore()
       .then(({ index, state }) => {
         const offset = Math.max(0, Number.isInteger(message.offset) ? message.offset : 0);
-        const limit = Math.min(MAX_IMAGES, Math.max(1, Number.isInteger(message.limit) ? message.limit : MAX_IMAGES));
+        const limit = Math.min(
+          MAX_IMAGE_LIST_PAGE_SIZE,
+          Math.max(1, Number.isInteger(message.limit) ? message.limit : MAX_IMAGE_LIST_PAGE_SIZE)
+        );
         const images = index.slice(offset, offset + limit).map(publicMetadata);
         sendResponse({
           success: true,
@@ -980,9 +1005,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'TOGGLE_HIDE_IMAGE') {
     toggleHideImage(message.id)
-      .then(async () => {
+      .then(async (result) => {
         await updateBadge();
-        sendResponse({ success: true });
+        sendResponse({ success: true, ...result });
       })
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
@@ -1084,7 +1109,9 @@ async function saveImageNow(newImage) {
     return true;
   });
   index.unshift(metadata);
-  if (index.length > MAX_IMAGES) removed.push(...index.splice(MAX_IMAGES));
+  const retention = enforceActiveImageLimit(index, [id]);
+  index = retention.index;
+  removed.push(...retention.removed);
   await chrome.storage.local.set({ [IMAGE_INDEX_KEY]: index });
   await removeImageRecords(removed);
   notifyImagesChanged();
@@ -1095,15 +1122,25 @@ function toggleHideImage(id) {
   return enqueueImageMutation(async () => {
     if (!isValidImageId(id)) throw new Error('Invalid image id.');
     const index = await readCompleteImageIndex();
-    let found = false;
+    const current = index.find((item) => item.id === id);
+    if (!current) throw new Error('Image no longer exists.');
+    const hidden = !current.hidden;
     const updated = index.map((item) => {
       if (item.id !== id) return item;
-      found = true;
-      return { ...item, hidden: !item.hidden };
+      return { ...item, hidden };
     });
-    if (!found) throw new Error('Image no longer exists.');
-    await chrome.storage.local.set({ [IMAGE_INDEX_KEY]: updated });
+    // Restoring a protected image at capacity keeps that image and rotates out
+    // the oldest other active record. Hiding never causes record eviction.
+    const retention = hidden
+      ? { index: updated, removed: [] }
+      : enforceActiveImageLimit(updated, [id]);
+    await chrome.storage.local.set({ [IMAGE_INDEX_KEY]: retention.index });
+    await removeImageRecords(retention.removed);
     notifyImagesChanged();
+    return {
+      hidden,
+      removedIds: retention.removed.map((item) => item.id)
+    };
   });
 }
 

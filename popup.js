@@ -1,4 +1,58 @@
-document.addEventListener('DOMContentLoaded', () => {
+const POPUP_IMAGE_LIST_PAGE_SIZE = 50;
+const POPUP_ACTIVE_IMAGE_LIMIT = 50;
+
+async function fetchPopupImageList(sendMessage, isCurrent = () => true) {
+  const images = [];
+  const seenIds = new Set();
+  let offset = 0;
+  let maxReportedTotal = 0;
+  let latestResponse = null;
+
+  while (isCurrent()) {
+    const response = await sendMessage({
+      action: 'GET_IMAGE_LIST',
+      offset,
+      limit: POPUP_IMAGE_LIST_PAGE_SIZE
+    });
+    if (!isCurrent()) return null;
+    if (!response?.success) throw new Error(response?.error || 'Could not load saved images.');
+
+    latestResponse = response;
+    const page = Array.isArray(response.images) ? response.images : [];
+    for (const image of page) {
+      if (!image || typeof image.id !== 'string' || image.id.length === 0 || seenIds.has(image.id)) continue;
+      seenIds.add(image.id);
+      images.push(image);
+    }
+
+    const nextOffset = offset + page.length;
+    const reportedTotal = Number.isFinite(Number(response.total))
+      ? Math.max(0, Math.floor(Number(response.total)))
+      : nextOffset;
+    maxReportedTotal = Math.max(maxReportedTotal, reportedTotal, nextOffset);
+
+    // During migration, hasMore also means that records may appear on a later
+    // poll. Only page through the metadata that exists in this snapshot so the
+    // popup can keep showing partial progress instead of chasing the migration.
+    if (page.length === 0 || nextOffset >= maxReportedTotal) break;
+    offset = nextOffset;
+  }
+
+  if (!latestResponse) return null;
+  return {
+    ...latestResponse,
+    images,
+    total: Math.max(maxReportedTotal, images.length)
+  };
+}
+
+function popupImagesForView(images, view) {
+  const list = Array.isArray(images) ? images : [];
+  if (view === 'hidden') return list.filter((image) => image?.hidden);
+  return list.filter((image) => image && !image.hidden).slice(0, POPUP_ACTIVE_IMAGE_LIMIT);
+}
+
+if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
   const grid = document.getElementById('image-grid');
   const skeletonGrid = document.getElementById('skeleton-grid');
   const emptyState = document.getElementById('empty-state');
@@ -127,11 +181,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!quiet && !hasCompletedInitialLoad && cachedImages.length === 0) renderSkeletons(4);
 
     try {
-      const response = await chrome.runtime.sendMessage({
-        action: 'GET_IMAGE_LIST',
-        limit: 50
-      });
+      const response = await fetchPopupImageList(
+        (message) => chrome.runtime.sendMessage(message),
+        () => revision === loadRevision
+      );
       if (revision !== loadRevision) return;
+      if (!response) return;
       if (!response?.success) throw new Error(response?.error || 'Could not load saved images.');
 
       cachedImages = Array.isArray(response.images) ? response.images : [];
@@ -194,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderGallery() {
-    const visibleImages = cachedImages.filter((image) => currentView === 'hidden' ? image.hidden : !image.hidden);
+    const visibleImages = popupImagesForView(cachedImages, currentView);
     updateCounts();
 
     if (visibleImages.length === 0) {
@@ -202,9 +257,9 @@ document.addEventListener('DOMContentLoaded', () => {
       grid.replaceChildren();
       if (!galleryMigrating) {
         showEmptyState(
-          currentView === 'hidden' ? 'Nothing hidden yet' : 'Your gallery is ready',
+          currentView === 'hidden' ? 'Nothing protected yet' : 'Your gallery is ready',
           currentView === 'hidden'
-            ? 'Hide an image from the Gallery view and it will appear here.'
+            ? 'Protect an important image so automatic Gallery cleanup cannot remove it.'
             : 'Copy an image, then add it from your clipboard.',
           currentView === 'hidden' ? 'Back to gallery' : 'Add first image',
           currentView === 'hidden' ? 'gallery' : 'sync'
@@ -300,7 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
       : 'Saved image';
     card.querySelector('.card-time').textContent = formatTimeAgo(image.timestamp);
     const hideButton = card.querySelector('.card-hide');
-    const hideLabel = image.hidden ? 'Restore image to gallery' : 'Hide image';
+    const hideLabel = image.hidden ? 'Restore to recent gallery' : 'Protect image';
     hideButton.title = hideLabel;
     hideButton.setAttribute('aria-label', hideLabel);
   }
@@ -314,7 +369,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const response = await chrome.runtime.sendMessage({ action: 'TOGGLE_HIDE_IMAGE', id: imageId });
       if (!response?.success) throw new Error(response?.error || 'Could not update image.');
       const image = cachedImages.find((item) => item.id === imageId);
-      if (image) image.hidden = !image.hidden;
+      if (image) image.hidden = typeof response.hidden === 'boolean' ? response.hidden : !image.hidden;
+      const removedIds = new Set(Array.isArray(response.removedIds) ? response.removedIds : []);
+      if (removedIds.size > 0) {
+        cachedImages = cachedImages.filter((item) => !removedIds.has(item.id));
+        galleryTotal = Math.max(0, galleryTotal - removedIds.size);
+        for (const removedId of removedIds) previewCache.delete(removedId);
+        showToast('Restored image. The oldest Gallery item was rotated out.');
+      }
       renderGallery();
     } catch (error) {
       button.disabled = false;
@@ -626,3 +688,12 @@ document.addEventListener('DOMContentLoaded', () => {
     return days < 30 ? `${days}d ago` : new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    POPUP_ACTIVE_IMAGE_LIMIT,
+    POPUP_IMAGE_LIST_PAGE_SIZE,
+    fetchPopupImageList,
+    popupImagesForView
+  };
+}

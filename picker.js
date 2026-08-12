@@ -12,6 +12,7 @@
 
   const MAX_PREVIEW_CONCURRENCY = 2;
   const PREVIEW_CACHE_LIMIT = 16;
+  const IMAGE_LIST_PAGE_SIZE = 50;
   let images = [];
   let downloads = [];
   let hiddenVisible = false;
@@ -46,7 +47,7 @@
     if (!event.isTrusted) return;
     hiddenVisible = !hiddenVisible;
     toggleHiddenButton.setAttribute('aria-expanded', String(hiddenVisible));
-    toggleHiddenButton.title = hiddenVisible ? 'Hide hidden images' : 'Show hidden images';
+    toggleHiddenButton.title = hiddenVisible ? 'Hide protected images' : 'Show protected images';
     hiddenSection.hidden = !hiddenVisible;
     if (hiddenVisible) renderHiddenImages(false);
     else hiddenGrid.replaceChildren();
@@ -100,14 +101,36 @@
     listRetryTimer = null;
     listInFlight = true;
     try {
-      const response = await chrome.runtime.sendMessage({ action: 'GET_IMAGE_LIST', limit: 50 });
-      if (!response?.success) throw new Error(response?.error || 'Could not load clipboard images.');
-      images = Array.isArray(response.images) ? response.images : [];
+      const nextImages = [];
+      const seenIds = new Set();
+      let offset = 0;
+      let maxReportedTotal = 0;
+      let latestMigration = null;
+
+      // `hasMore` also stays true while migration is producing future items.
+      // Follow only totals reported by the bounded pages we actually receive;
+      // the existing retry below will pick up future migration snapshots.
+      while (true) {
+        const page = await requestImageListPage(offset, IMAGE_LIST_PAGE_SIZE);
+        if (page.migration) latestMigration = page.migration;
+        appendUniqueImages(nextImages, seenIds, page.images);
+
+        const nextOffset = offset + page.images.length;
+        maxReportedTotal = Math.max(
+          maxReportedTotal,
+          normalizeImageListTotal(page.total, nextOffset),
+          nextOffset
+        );
+        if (page.images.length === 0 || nextOffset >= maxReportedTotal) break;
+        offset = nextOffset;
+      }
+
+      images = nextImages;
       discardRemovedPreviewCache();
       renderImageSections();
-      updateMigrationStatus(response.migration);
+      updateMigrationStatus(latestMigration);
 
-      if (response.migration && response.migration.complete === false) {
+      if (latestMigration && latestMigration.complete === false) {
         listRetryTimer = setTimeout(() => requestImageList(), 150);
       }
     } catch (error) {
@@ -122,6 +145,38 @@
         queueMicrotask(requestImageList);
       }
     }
+  }
+
+  async function requestImageListPage(offset, limit) {
+    const response = await chrome.runtime.sendMessage({
+      action: 'GET_IMAGE_LIST',
+      offset,
+      limit: Math.min(IMAGE_LIST_PAGE_SIZE, Math.max(1, limit))
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || 'Could not load clipboard images.');
+    }
+    return {
+      images: Array.isArray(response.images) ? response.images : [],
+      total: response.total,
+      migration: response.migration && typeof response.migration === 'object'
+        ? response.migration
+        : null
+    };
+  }
+
+  function normalizeImageListTotal(value, pageLength) {
+    return Number.isSafeInteger(value) && value >= 0
+      ? Math.max(value, pageLength)
+      : pageLength;
+  }
+
+  function appendUniqueImages(target, seenIds, pageImages) {
+    pageImages.forEach((image) => {
+      if (!image || typeof image.id !== 'string' || !image.id || seenIds.has(image.id)) return;
+      seenIds.add(image.id);
+      target.push(image);
+    });
   }
 
   function updateMigrationStatus(migration) {
@@ -191,7 +246,7 @@
     const hiddenImages = images.filter((image) => image.hidden);
     hiddenGrid.replaceChildren();
     if (hiddenImages.length === 0) {
-      renderGridState(hiddenGrid, 'No hidden images.');
+      renderGridState(hiddenGrid, 'No protected images.');
     } else {
       hiddenImages.forEach((image) => hiddenGrid.appendChild(createImageTile(image, true)));
     }
@@ -231,7 +286,7 @@
     const hideButton = document.createElement('button');
     hideButton.type = 'button';
     hideButton.className = 'hide-action';
-    hideButton.title = isHidden ? 'Restore image' : 'Hide image';
+    hideButton.title = isHidden ? 'Restore to recent gallery' : 'Protect image';
     hideButton.setAttribute('aria-label', hideButton.title);
     hideButton.textContent = isHidden ? '\u21a9' : '\u25c9';
     hideButton.addEventListener('click', async (event) => {
