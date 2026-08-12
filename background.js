@@ -65,6 +65,21 @@ chrome.runtime.onInstalled.addListener(() => {
   updateBadge().catch(() => {});
 });
 
+if (typeof chrome !== 'undefined' && chrome.commands?.onCommand) {
+  chrome.commands.onCommand.addListener(async (command) => {
+    if (command === 'OPEN_PICKER') {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, { action: 'TOGGLE_PICKER' }).catch(() => {});
+        }
+      } catch (error) {
+        // Ignore tab query errors
+      }
+    }
+  });
+}
+
 function imageStorageKey(id) {
   return IMAGE_KEY_PREFIX + encodeURIComponent(id);
 }

@@ -12,7 +12,8 @@ The gallery is stored locally, loads metadata before image data, and never sends
 - **On-demand clipboard sync:** Read the system clipboard only after an explicit popup action or an eligible upload interaction.
 - **Recent downloads:** Show real, bounded previews for supported image downloads, keep clear file-type cards for other formats, and attach a selected item when its original HTTP(S) URL can be fetched safely.
 - **Extension-owned upload picker:** Render the picker in an extension-origin iframe rather than in page-owned DOM.
-- **Per-site control:** Enable or disable upload interception for the active hostname from the toolbar popup.
+- **Keyboard shortcut:** Toggle the upload picker overlay instantly on any page with `Ctrl+Shift+V` (`Command+Shift+V` on macOS). Customize at `chrome://extensions/shortcuts`.
+- **Toolbar popup:** Access quick site controls, recent clipboard items, and protected images.
 - **Native fallback:** Open the normal operating-system file picker at any time with **Browse files**.
 - **Large-gallery compatibility:** Migrate the previous aggregate storage format incrementally without deleting the original data before commit.
 

@@ -115,6 +115,19 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.action === 'TOGGLE_PICKER' || message?.action === 'OPEN_PICKER') {
+      if (domainDisabled) {
+        sendResponse?.({ success: false, reason: 'DOMAIN_DISABLED' });
+        return false;
+      }
+      if (activeModal) {
+        closeClipboardPickerModal();
+      } else {
+        openClipboardPickerModal();
+      }
+      sendResponse?.({ success: true });
+      return false;
+    }
     if (message?.action === 'DOMAIN_STATE_CHANGED') {
       domainDisabled = !!message.disabled;
       if (domainDisabled) closeClipboardPickerModal();

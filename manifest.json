@@ -38,5 +38,14 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Clipboard & Downloads"
+  },
+  "commands": {
+    "OPEN_PICKER": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+V",
+        "mac": "Command+Shift+V"
+      },
+      "description": "Open upload picker overlay on active page"
+    }
   }
 }
