@@ -1,5 +1,14 @@
 function isExpectedPickerMessageEvent(event, session) {
-  if (!event || !session || event.origin !== session.origin) return false;
+  if (!event || !session) return false;
+
+  // A web-accessible resource using `use_dynamic_url` can be loaded from a
+  // per-session host while Chromium reports the installed extension origin on
+  // the MessageEvent. Both values identify this extension and are bound to the
+  // unguessable picker capability below.
+  const expectedOrigins = new Set(
+    [session.origin, session.extensionOrigin].filter((origin) => typeof origin === 'string' && origin)
+  );
+  if (!expectedOrigins.has(event.origin)) return false;
 
   // Chromium deliberately reports `source` as null for some messages sent by
   // extension documents. When it is available, still require the exact picker
@@ -15,6 +24,64 @@ function isExpectedPickerMessageEvent(event, session) {
     && typeof message.type === 'string';
 }
 
+function normalizePickerCommand(message) {
+  if (!message || typeof message !== 'object') return null;
+  if (!/^[a-f0-9]{32}$/.test(message.token || '')) return null;
+  if (!/^[a-f0-9]{24,64}$/.test(message.commandId || '')) return null;
+
+  const command = {
+    type: message.type,
+    token: message.token,
+    commandId: message.commandId,
+    parentOrigin: typeof message.parentOrigin === 'string' ? message.parentOrigin : ''
+  };
+
+  if (message.type === 'CIP_CLOSE' || message.type === 'CIP_SHOW_ALL') return command;
+  if (message.type === 'CIP_PICK_IMAGE') {
+    if (typeof message.imageId !== 'string' || message.imageId.length < 1 || message.imageId.length > 160) return null;
+    command.imageId = message.imageId;
+    return command;
+  }
+  if (message.type === 'CIP_PICK_DOWNLOAD') {
+    if (!Number.isSafeInteger(message.downloadId) || message.downloadId < 0) return null;
+    command.downloadId = message.downloadId;
+    command.name = typeof message.name === 'string' ? message.name.slice(0, 255) : 'download';
+    return command;
+  }
+  return null;
+}
+
+function routePickerCommand(rawMessage, session, handledCommandIds, handlers) {
+  const message = normalizePickerCommand(rawMessage);
+  if (!message || !session?.active || message.token !== session.token || message.parentOrigin !== session.parentOrigin) {
+    return { success: false, code: 'INVALID_PICKER_COMMAND' };
+  }
+  if (handledCommandIds.has(message.commandId)) return { success: true, duplicate: true };
+  if ((message.type === 'CIP_PICK_IMAGE' || message.type === 'CIP_PICK_DOWNLOAD')
+      && handlers.selectionInProgress()) {
+    return { success: false, code: 'SELECTION_IN_PROGRESS' };
+  }
+
+  handledCommandIds.add(message.commandId);
+  while (handledCommandIds.size > 64) {
+    handledCommandIds.delete(handledCommandIds.values().next().value);
+  }
+
+  if (message.type === 'CIP_PICK_IMAGE') handlers.pickImage(message);
+  else if (message.type === 'CIP_PICK_DOWNLOAD') handlers.pickDownload(message);
+  else if (message.type === 'CIP_SHOW_ALL') handlers.showAll();
+  else handlers.close();
+  return { success: true };
+}
+
+function isTrustedPickerEscape(event) {
+  return !!event?.isTrusted && event.key === 'Escape';
+}
+
+function isTrustedPickerBackdrop(event, host) {
+  return !!event?.isTrusted && event.target === host;
+}
+
 if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   (function () {
   let targetInput = null;
@@ -23,6 +90,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   let pickerToken = '';
   let pickerParentOrigin = '';
   let pickerMessageOrigin = '';
+  let pickerExtensionOrigin = '';
   let selectionInProgress = false;
   let isBypassing = false;
   // Interception stays disabled until the background confirms this site's
@@ -32,6 +100,8 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   let lastTrustedPageActionTime = 0;
   let lastBackgroundSyncTime = 0;
   let originalClickTrigger = null;
+  let focusBeforePicker = null;
+  const handledPickerCommandIds = new Set();
 
   const MAX_CAPTURE_BYTES = 6 * 1024 * 1024;
   const pickerUrl = chrome.runtime.getURL('picker.html');
@@ -44,7 +114,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
       domainDisabled = true;
     });
 
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.action === 'DOMAIN_STATE_CHANGED') {
       domainDisabled = !!message.disabled;
       if (domainDisabled) closeClipboardPickerModal();
@@ -52,6 +122,26 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     if (message?.action === 'IMAGES_CHANGED' && activeModal) {
       postToPicker({ type: 'CIP_HOST_REFRESH' });
     }
+    if (message?.action === 'PICKER_SESSION_CHALLENGE') {
+      const trustedRelay = sender?.id === chrome.runtime.id && !sender?.tab;
+      const matchesActivePicker = trustedRelay
+        && !!activeModal?.isConnected
+        && !domainDisabled
+        && /^[a-f0-9]{32}$/.test(message.token || '')
+        && message.token === pickerToken
+        && message.parentOrigin === pickerParentOrigin;
+      sendResponse?.({ success: matchesActivePicker });
+      return false;
+    }
+    if (message?.action === 'PICKER_COMMAND') {
+      const trustedRelay = sender?.id === chrome.runtime.id && !sender?.tab;
+      const result = trustedRelay
+        ? dispatchPickerCommand(message)
+        : { success: false, code: 'UNTRUSTED_RELAY' };
+      sendResponse?.(result);
+      return false;
+    }
+    return false;
   });
 
   window.addEventListener('message', handlePickerMessage);
@@ -369,11 +459,6 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     if (now - lastBackgroundSyncTime < 2000) return null;
     lastBackgroundSyncTime = now;
     try {
-      const registration = await chrome.runtime.sendMessage({
-        action: 'REGISTER_PICKER_SESSION',
-        token: sessionToken
-      });
-      if (!registration?.success) return null;
       const response = await chrome.runtime.sendMessage({
         action: 'AUTO_CHECK_CLIPBOARD',
         sessionToken
@@ -406,35 +491,34 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     if (!activeModal || !pickerFrame || !isExpectedPickerMessageEvent(event, {
       contentWindow: pickerFrame.contentWindow,
       origin: pickerMessageOrigin,
+      extensionOrigin: pickerExtensionOrigin,
       token: pickerToken,
       parentOrigin: pickerParentOrigin
     })) return;
-    const message = event.data;
+    dispatchPickerCommand(event.data);
+  }
 
-    if (message.type === 'CIP_PICK_IMAGE') {
-      if (selectionInProgress || typeof message.imageId !== 'string' || message.imageId.length > 256) return;
-      selectionInProgress = true;
-      selectClipboardImage(message.imageId, pickerToken);
-      return;
-    }
-
-    if (message.type === 'CIP_PICK_DOWNLOAD') {
-      if (selectionInProgress || !Number.isInteger(message.downloadId)) return;
-      selectionInProgress = true;
-      selectDownloadedFile({
-        id: message.downloadId,
-        name: sanitizeFilename(message.name)
-      }, pickerToken);
-      return;
-    }
-
-    if (message.type === 'CIP_SHOW_ALL') {
-      triggerNativeFileInput();
-      closeClipboardPickerModal();
-      return;
-    }
-
-    if (message.type === 'CIP_CLOSE') closeClipboardPickerModal();
+  function dispatchPickerCommand(rawMessage) {
+    return routePickerCommand(rawMessage, {
+      active: !!activeModal,
+      token: pickerToken,
+      parentOrigin: pickerParentOrigin
+    }, handledPickerCommandIds, {
+      selectionInProgress: () => selectionInProgress,
+      pickImage: (message) => {
+        selectionInProgress = true;
+        selectClipboardImage(message.imageId, pickerToken);
+      },
+      pickDownload: (message) => {
+        selectionInProgress = true;
+        selectDownloadedFile({ id: message.downloadId, name: sanitizeFilename(message.name) }, pickerToken);
+      },
+      showAll: () => {
+        triggerNativeFileInput();
+        closeClipboardPickerModal();
+      },
+      close: closeClipboardPickerModal
+    });
   }
 
   function openClipboardPickerModal() {
@@ -443,6 +527,9 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
 
     pickerToken = createPickerToken();
     pickerParentOrigin = window.location.origin === 'null' ? '' : window.location.origin;
+    pickerExtensionOrigin = new URL(chrome.runtime.getURL('')).origin;
+    focusBeforePicker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    handledPickerCommandIds.clear();
     const host = document.createElement('div');
     host.id = 'cip-modal-host';
     host.setAttribute('role', 'presentation');
@@ -450,8 +537,21 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     // per-open capability token or altering the extension-owned picker DOM.
     const shadowRoot = host.attachShadow({ mode: 'closed' });
     host.addEventListener('click', (event) => {
-      if (event.isTrusted && event.target === host) closeClipboardPickerModal();
+      if (isTrustedPickerBackdrop(event, host)) closeClipboardPickerModal();
     });
+
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', 'Clipboard and downloads picker');
+    dialog.style.cssText = [
+      'position:relative',
+      'display:block',
+      'width:min(820px, 94vw)',
+      'height:min(540px, 88vh)',
+      'margin:0',
+      'padding:0'
+    ].join(';');
 
     const frame = document.createElement('iframe');
     frame.title = 'Clipboard and downloads picker';
@@ -465,8 +565,8 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     frame.style.cssText = [
       'display:block',
       'box-sizing:border-box',
-      'width:min(820px, 94vw)',
-      'height:min(540px, 88vh)',
+      'width:100%',
+      'height:100%',
       'margin:0',
       'padding:0',
       'overflow:hidden',
@@ -476,7 +576,52 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
       'box-shadow:0 25px 60px rgba(0,0,0,.6)',
       'color-scheme:dark'
     ].join(';');
-    shadowRoot.appendChild(frame);
+
+    // This button is owned by the content script rather than the iframe. It
+    // therefore remains a direct, dependency-free escape hatch even if an
+    // iframe message is delayed or rejected by Chromium's origin boundary.
+    const directCloseButton = document.createElement('button');
+    directCloseButton.type = 'button';
+    directCloseButton.setAttribute('aria-label', 'Close picker');
+    directCloseButton.title = 'Close';
+    directCloseButton.textContent = '\u00d7';
+    directCloseButton.style.cssText = [
+      'position:absolute',
+      'z-index:3',
+      'top:10px',
+      'right:10px',
+      'display:grid',
+      'place-items:center',
+      'width:40px',
+      'height:40px',
+      'padding:0',
+      'border:1px solid rgba(255,255,255,.12)',
+      'border-radius:11px',
+      'background:rgba(27,31,44,.97)',
+      'box-shadow:0 4px 14px rgba(0,0,0,.24)',
+      'color:#cbd5e1',
+      'font:400 24px/1 system-ui,sans-serif',
+      'cursor:pointer',
+      'transition:background-color .15s ease,color .15s ease,border-color .15s ease,transform .15s ease'
+    ].join(';');
+    directCloseButton.addEventListener('pointerenter', () => {
+      directCloseButton.style.background = 'rgba(73,32,47,.97)';
+      directCloseButton.style.borderColor = 'rgba(251,113,133,.42)';
+      directCloseButton.style.color = '#fda4af';
+    });
+    directCloseButton.addEventListener('pointerleave', () => {
+      directCloseButton.style.background = 'rgba(27,31,44,.97)';
+      directCloseButton.style.borderColor = 'rgba(255,255,255,.12)';
+      directCloseButton.style.color = '#cbd5e1';
+    });
+    directCloseButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeClipboardPickerModal();
+    });
+
+    dialog.append(frame, directCloseButton);
+    shadowRoot.appendChild(dialog);
     document.documentElement.appendChild(host);
 
     activeModal = host;
@@ -484,26 +629,48 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     selectionInProgress = false;
     requestAnimationFrame(() => host.classList.add('cip-visible'));
     window.addEventListener('keydown', handleEscKey);
-    schedulePickerClipboardSync(host, pickerToken);
+    directCloseButton.focus({ preventScroll: true });
+    chrome.runtime.sendMessage({
+      action: 'REGISTER_PICKER_SESSION',
+      token: pickerToken,
+      parentOrigin: pickerParentOrigin
+    }).then((registration) => {
+      if (registration?.success && activeModal === host && pickerToken) {
+        schedulePickerClipboardSync(host, pickerToken);
+      }
+    }).catch(() => {});
   }
 
   function handleEscKey(event) {
-    if (event.isTrusted && event.key === 'Escape') closeClipboardPickerModal();
+    if (isTrustedPickerEscape(event)) closeClipboardPickerModal();
   }
 
   function closeClipboardPickerModal() {
     window.removeEventListener('keydown', handleEscKey);
     selectionInProgress = false;
+    const closingToken = pickerToken;
     pickerFrame = null;
     pickerToken = '';
     pickerParentOrigin = '';
     pickerMessageOrigin = '';
+    pickerExtensionOrigin = '';
+    handledPickerCommandIds.clear();
+    if (closingToken) {
+      chrome.runtime.sendMessage({ action: 'UNREGISTER_PICKER_SESSION', token: closingToken }).catch(() => {});
+    }
     if (!activeModal) return;
 
     const modalToClose = activeModal;
     activeModal = null;
+    modalToClose.style.pointerEvents = 'none';
+    modalToClose.setAttribute('aria-hidden', 'true');
     modalToClose.classList.remove('cip-visible');
     setTimeout(() => modalToClose.remove(), 200);
+    const restoreTarget = focusBeforePicker;
+    focusBeforePicker = null;
+    if (restoreTarget?.isConnected) {
+      queueMicrotask(() => restoreTarget.focus({ preventScroll: true }));
+    }
   }
 
   async function selectClipboardImage(imageId, selectionSession) {
@@ -582,5 +749,11 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isExpectedPickerMessageEvent };
+  module.exports = {
+    isExpectedPickerMessageEvent,
+    normalizePickerCommand,
+    routePickerCommand,
+    isTrustedPickerEscape,
+    isTrustedPickerBackdrop
+  };
 }

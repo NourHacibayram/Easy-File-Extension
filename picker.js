@@ -1,4 +1,18 @@
+function normalizePickerThumbnailResponse(response, previewKind, resourceId, maxLength) {
+  const responseMatches = previewKind === 'download'
+    ? response?.downloadId === resourceId
+    : response?.id === resourceId;
+  return response?.success
+    && responseMatches
+    && typeof response.thumbnailDataUrl === 'string'
+    && response.thumbnailDataUrl.startsWith('data:image/')
+    && response.thumbnailDataUrl.length <= maxLength
+    ? response.thumbnailDataUrl
+    : '';
+}
+
 (function () {
+  if (typeof document === 'undefined') return;
   const query = new URLSearchParams(location.search);
   const token = query.get('token') || '';
   const expectedParentOrigin = parseParentOrigin(query.get('parentOrigin'));
@@ -7,11 +21,14 @@
   const hiddenGrid = document.getElementById('hidden-grid');
   const hiddenSection = document.getElementById('hidden-section');
   const toggleHiddenButton = document.getElementById('toggle-hidden');
+  const sourceTabs = Array.from(document.querySelectorAll('[role="tab"][aria-controls]'));
+  const sourcePanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
   const migrationStatus = document.getElementById('migration-status');
   const pickerBody = document.getElementById('picker-body');
 
   const MAX_PREVIEW_CONCURRENCY = 2;
   const PREVIEW_CACHE_LIMIT = 16;
+  const MAX_PREVIEW_DATA_URL_LENGTH = 512 * 1024;
   const IMAGE_LIST_PAGE_SIZE = 50;
   let images = [];
   let downloads = [];
@@ -43,14 +60,25 @@
     sendToHost({ type: 'CIP_CLOSE' });
   });
 
-  toggleHiddenButton.addEventListener('click', (event) => {
+  toggleHiddenButton?.addEventListener('click', (event) => {
     if (!event.isTrusted) return;
-    hiddenVisible = !hiddenVisible;
-    toggleHiddenButton.setAttribute('aria-expanded', String(hiddenVisible));
-    toggleHiddenButton.title = hiddenVisible ? 'Hide protected images' : 'Show protected images';
-    hiddenSection.hidden = !hiddenVisible;
-    if (hiddenVisible) renderHiddenImages(false);
-    else hiddenGrid.replaceChildren();
+    activateSourceTab(document.getElementById('source-protected'));
+  });
+
+  sourceTabs.forEach((tab, index) => {
+    tab.addEventListener('click', (event) => {
+      if (event.isTrusted) activateSourceTab(tab);
+    });
+    tab.addEventListener('keydown', (event) => {
+      if (!event.isTrusted || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      let targetIndex = index;
+      if (event.key === 'Home') targetIndex = 0;
+      else if (event.key === 'End') targetIndex = sourceTabs.length - 1;
+      else targetIndex = (index + (event.key === 'ArrowRight' ? 1 : -1) + sourceTabs.length) % sourceTabs.length;
+      activateSourceTab(sourceTabs[targetIndex]);
+      sourceTabs[targetIndex].focus();
+    });
   });
 
   window.addEventListener('keydown', (event) => {
@@ -88,7 +116,54 @@
   }
 
   function sendToHost(message) {
-    window.parent.postMessage({ ...message, token, parentOrigin: expectedParentOrigin }, expectedParentOrigin || '*');
+    const command = {
+      ...message,
+      token,
+      parentOrigin: expectedParentOrigin,
+      commandId: createCommandId()
+    };
+    // Keep the direct path for immediate feedback on Chromium versions that
+    // preserve extension MessageEvent identity. The extension-internal relay
+    // is the reliable path across dynamic WAR origins and source=null events;
+    // both are idempotent through commandId.
+    window.parent.postMessage(command, expectedParentOrigin || '*');
+    chrome.runtime.sendMessage({ action: 'RELAY_PICKER_COMMAND', ...command })
+      .then((response) => {
+        if (!response?.success && message.type !== 'CIP_CLOSE') {
+          clearBusyTiles();
+          showToast('The page connection changed. Refresh the page and try again.');
+        }
+      })
+      .catch(() => {
+        if (message.type !== 'CIP_CLOSE') {
+          clearBusyTiles();
+          showToast('The extension was updated. Refresh the page and try again.');
+        }
+      });
+  }
+
+  function createCommandId() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function activateSourceTab(tab) {
+    if (!tab) return;
+    const panelId = tab.getAttribute('aria-controls');
+    sourceTabs.forEach((item) => {
+      const active = item === tab;
+      item.setAttribute('aria-selected', String(active));
+      item.tabIndex = active ? 0 : -1;
+    });
+    sourcePanels.forEach((panel) => {
+      panel.hidden = panel.id !== panelId;
+    });
+    hiddenVisible = panelId === 'hidden-section';
+    toggleHiddenButton?.setAttribute('aria-expanded', String(hiddenVisible));
+    if (hiddenVisible) renderHiddenImages();
+    else observeVisiblePreviews();
+    pickerBody.scrollTop = 0;
   }
 
   async function requestImageList() {
@@ -131,7 +206,7 @@
       updateMigrationStatus(latestMigration);
 
       if (latestMigration && latestMigration.complete === false) {
-        listRetryTimer = setTimeout(() => requestImageList(), 150);
+        listRetryTimer = setTimeout(() => requestImageList(), 500);
       }
     } catch (error) {
       renderGridState(clipboardGrid, /context invalidated/i.test(error.message || '')
@@ -223,6 +298,7 @@
     const activeImages = images.filter((image) => !image.hidden).slice(0, 30);
     const hiddenImages = images.filter((image) => image.hidden);
     document.getElementById('clipboard-count').textContent = String(activeImages.length);
+    document.getElementById('clipboard-tab-count').textContent = String(activeImages.length);
     document.getElementById('hidden-count').textContent = String(hiddenImages.length);
     document.getElementById('hidden-section-count').textContent = String(hiddenImages.length);
 
@@ -262,6 +338,7 @@
     tile.className = 'tile';
     tile.dataset.imageId = image.id;
     tile.title = `Use ${image.width || 0} by ${image.height || 0} image`;
+    tile.setAttribute('aria-label', `Attach ${image.width || 0} by ${image.height || 0} image`);
 
     const square = document.createElement('span');
     square.className = 'tile-square';
@@ -270,6 +347,8 @@
     preview.alt = '';
     preview.decoding = 'async';
     preview.dataset.imageId = image.id;
+    preview.dataset.previewKind = 'clipboard';
+    preview.dataset.previewKey = `clipboard:${image.id}`;
     preview.dataset.previewState = 'waiting';
     square.appendChild(preview);
 
@@ -307,7 +386,10 @@
   }
 
   function renderDownloads() {
+    renderGeneration++;
+    resetPreviewWork();
     document.getElementById('downloads-count').textContent = String(downloads.length);
+    document.getElementById('downloads-tab-count').textContent = String(downloads.length);
     downloadsGrid.replaceChildren();
     if (downloads.length === 0) {
       renderGridState(downloadsGrid, 'No recent downloads.');
@@ -319,13 +401,24 @@
       tile.type = 'button';
       tile.className = 'tile';
       tile.title = `Use ${download.name || 'download'}`;
+      tile.setAttribute('aria-label', `Attach ${download.name || 'download'}`);
 
       const square = document.createElement('span');
       square.className = 'tile-square';
-      const icon = document.createElement('span');
-      icon.className = 'file-icon';
-      icon.textContent = getDownloadLabel(download);
-      square.appendChild(icon);
+      if (download.previewable && Number.isSafeInteger(download.id)) {
+        const preview = document.createElement('img');
+        preview.className = 'preview';
+        preview.alt = '';
+        preview.decoding = 'async';
+        preview.dataset.downloadId = String(download.id);
+        preview.dataset.previewKind = 'download';
+        preview.dataset.previewKey = `download:${download.id}`;
+        preview.dataset.previewFallback = getDownloadLabel(download);
+        preview.dataset.previewState = 'waiting';
+        square.appendChild(preview);
+      } else {
+        square.appendChild(createDownloadIcon(getDownloadLabel(download)));
+      }
 
       const label = document.createElement('span');
       label.className = 'tile-label';
@@ -342,6 +435,15 @@
       });
       downloadsGrid.appendChild(tile);
     });
+    discardRemovedDownloadPreviewCache();
+    observeVisiblePreviews();
+  }
+
+  function createDownloadIcon(label) {
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.textContent = label;
+    return icon;
   }
 
   function getDownloadLabel(download) {
@@ -373,9 +475,15 @@
   function enqueuePreview(preview) {
     if (!preview.isConnected || preview.dataset.previewState !== 'waiting') return;
     preview.dataset.previewState = 'queued';
+    const previewKind = preview.dataset.previewKind === 'download' ? 'download' : 'clipboard';
+    const resourceId = previewKind === 'download'
+      ? Number(preview.dataset.downloadId)
+      : preview.dataset.imageId;
     previewQueue.push({
       preview,
-      imageId: preview.dataset.imageId,
+      previewKind,
+      previewKey: preview.dataset.previewKey || `${previewKind}:${resourceId}`,
+      resourceId,
       generation: renderGeneration
     });
     pumpPreviewQueue();
@@ -396,52 +504,85 @@
   }
 
   async function hydratePreview(job) {
-    const { preview, imageId, generation } = job;
+    const { preview, previewKey, previewKind, generation } = job;
     preview.dataset.previewState = 'loading';
     try {
-      const dataUrl = await getPreviewData(imageId);
-      if (!preview.isConnected || generation !== renderGeneration || preview.dataset.imageId !== imageId) return;
+      const dataUrl = await getPreviewData(job);
+      if (!preview.isConnected
+          || generation !== renderGeneration
+          || preview.dataset.previewKey !== previewKey) return;
       preview.src = dataUrl;
+      if (typeof preview.decode === 'function') await preview.decode();
+      if (!preview.isConnected
+          || generation !== renderGeneration
+          || preview.dataset.previewKey !== previewKey) return;
       preview.classList.add('loaded');
       preview.dataset.previewState = 'loaded';
     } catch (error) {
       if (!preview.isConnected || generation !== renderGeneration) return;
+      if (previewKind === 'download') {
+        preview.replaceWith(createDownloadIcon(preview.dataset.previewFallback || 'file'));
+        return;
+      }
       preview.classList.add('error');
       preview.dataset.previewState = 'error';
     }
   }
 
-  async function getPreviewData(imageId) {
-    if (previewCache.has(imageId)) {
-      const cached = previewCache.get(imageId);
-      previewCache.delete(imageId);
-      previewCache.set(imageId, cached);
+  async function getPreviewData({ previewKey, previewKind, resourceId }) {
+    if (previewCache.has(previewKey)) {
+      const cached = previewCache.get(previewKey);
+      previewCache.delete(previewKey);
+      previewCache.set(previewKey, cached);
       return cached;
     }
 
-    const response = await chrome.runtime.sendMessage({ action: 'GET_IMAGE_THUMBNAIL', id: imageId });
-    if (!response?.success || response.id !== imageId || typeof response.thumbnailDataUrl !== 'string') {
+    const response = previewKind === 'download'
+      ? await chrome.runtime.sendMessage({ action: 'GET_DOWNLOAD_THUMBNAIL', downloadId: resourceId })
+      : await chrome.runtime.sendMessage({ action: 'GET_IMAGE_THUMBNAIL', id: resourceId });
+    const thumbnailDataUrl = normalizePickerThumbnailResponse(
+      response,
+      previewKind,
+      resourceId,
+      MAX_PREVIEW_DATA_URL_LENGTH
+    );
+    if (!thumbnailDataUrl) {
       throw new Error(response?.error || 'Preview unavailable.');
     }
-    previewCache.set(imageId, response.thumbnailDataUrl);
+    previewCache.set(previewKey, thumbnailDataUrl);
     while (previewCache.size > PREVIEW_CACHE_LIMIT) {
       previewCache.delete(previewCache.keys().next().value);
     }
-    return response.thumbnailDataUrl;
+    return thumbnailDataUrl;
   }
 
   function resetPreviewWork() {
     previewObserver?.disconnect();
     previewObserver = null;
     previewQueue.length = 0;
+    document.querySelectorAll('img.preview[data-preview-state="queued"], img.preview[data-preview-state="loading"]')
+      .forEach((preview) => {
+        preview.dataset.previewState = 'waiting';
+      });
     // In-flight jobs are allowed to settle, but generation checks prevent them
     // from populating stale DOM. New requests still respect the global cap.
   }
 
   function discardRemovedPreviewCache() {
     const ids = new Set(images.map((image) => image.id));
-    for (const imageId of previewCache.keys()) {
-      if (!ids.has(imageId)) previewCache.delete(imageId);
+    for (const key of previewCache.keys()) {
+      if (key.startsWith('clipboard:') && !ids.has(key.slice('clipboard:'.length))) {
+        previewCache.delete(key);
+      }
+    }
+  }
+
+  function discardRemovedDownloadPreviewCache() {
+    const ids = new Set(downloads.map((download) => String(download.id)));
+    for (const key of previewCache.keys()) {
+      if (key.startsWith('download:') && !ids.has(key.slice('download:'.length))) {
+        previewCache.delete(key);
+      }
     }
   }
 
@@ -468,6 +609,10 @@
     renderGridState(clipboardGrid, message, true);
     renderGridState(downloadsGrid, 'Open an upload field to use this picker.');
     document.getElementById('show-all').disabled = true;
-    toggleHiddenButton.disabled = true;
+    if (toggleHiddenButton) toggleHiddenButton.disabled = true;
   }
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { normalizePickerThumbnailResponse };
+}

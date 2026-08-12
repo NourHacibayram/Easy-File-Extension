@@ -1,6 +1,6 @@
 # Clipboard & Downloads Upload Manager
 
-A Manifest V3 extension for Chrome, Edge, and Brave that makes repeated uploads faster. When an enabled page opens an eligible file input, the extension presents an extension-owned picker containing saved clipboard images and recent browser downloads. The native operating-system picker remains available through **Show all files**.
+A Manifest V3 extension for Chrome, Edge, and Brave that makes repeated uploads faster. When an enabled page opens an eligible file input, the extension presents an extension-owned picker containing saved clipboard images and recent browser downloads. The native operating-system picker remains available through **Browse files**.
 
 The gallery is stored locally, loads metadata before image data, and never sends the complete gallery through one extension message.
 
@@ -10,10 +10,10 @@ The gallery is stored locally, loads metadata before image data, and never sends
 
 - **Clipboard gallery:** Keep up to 50 recent Gallery images, protect important images from automatic rotation, and restore or delete individual items.
 - **On-demand clipboard sync:** Read the system clipboard only after an explicit popup action or an eligible upload interaction.
-- **Recent downloads:** Show recent browser-download metadata and attach a selected item when its original HTTP(S) URL can be fetched safely.
+- **Recent downloads:** Show real, bounded previews for supported image downloads, keep clear file-type cards for other formats, and attach a selected item when its original HTTP(S) URL can be fetched safely.
 - **Extension-owned upload picker:** Render the picker in an extension-origin iframe rather than in page-owned DOM.
 - **Per-site control:** Enable or disable upload interception for the active hostname from the toolbar popup.
-- **Native fallback:** Open the normal operating-system file picker at any time with **Show all files**.
+- **Native fallback:** Open the normal operating-system file picker at any time with **Browse files**.
 - **Large-gallery compatibility:** Migrate the previous aggregate storage format incrementally without deleting the original data before commit.
 
 ## Toolbar popup
@@ -42,10 +42,10 @@ The first preview of an older image can take longer because its thumbnail may ne
 The upload picker provides three areas:
 
 - **Clipboard:** Active saved images, loaded from lightweight metadata and lazy thumbnails.
-- **Downloaded:** Recent entries from the browser downloads history.
+- **Downloads:** Recent entries from the browser downloads history. Supported image files load small previews on demand; non-image files retain a clear type card.
 - **Protected:** Important gallery images that do not count toward the 50 recent-image rotation limit, loaded only when that section is opened.
 
-Choose an item to attach it to the page's upload target. Press `Esc`, use the close button, or click outside the picker to dismiss it. Use **Show all files** when a website requires the native picker or a recent download cannot be fetched.
+Choose an item to attach it to the page's upload target. Press `Esc`, use the close button, or click outside the picker to dismiss it. Use **Browse files** when a website requires the native picker or a recent download cannot be fetched.
 
 ## Data and message architecture
 
@@ -59,6 +59,7 @@ The UI uses a bounded protocol:
 
 - `GET_IMAGE_LIST` returns metadata only;
 - `GET_IMAGE_THUMBNAIL` returns one bounded preview;
+- `GET_DOWNLOAD_THUMBNAIL` returns one bounded preview for a supported image download;
 - `GET_IMAGE_DATA` returns one original only after it is selected.
 
 New images are limited to 6 MiB after preparation. Thumbnails are bounded separately. This design avoids Chrome's 64 MiB extension-message ceiling even when the total local gallery is much larger.
@@ -77,6 +78,8 @@ sequenceDiagram
     Worker-->>Picker: Metadata only
     Picker->>Worker: GET_IMAGE_THUMBNAIL for visible items
     Worker-->>Picker: One bounded thumbnail
+    Picker->>Worker: GET_DOWNLOAD_THUMBNAIL for visible image downloads
+    Worker-->>Picker: One bounded download preview
     Host->>Worker: Authorized on-demand clipboard check
     Worker->>Offscreen: Read and prepare clipboard image
     Offscreen-->>Worker: One prepared image
@@ -91,7 +94,7 @@ sequenceDiagram
         Host->>Worker: FETCH_DOWNLOAD_DATA
         Worker-->>Host: Bounded file data
         Host->>Page: Attach selected File
-    else User chooses Show all files
+    else User chooses Browse files
         Picker->>Host: Native-picker request
         Host->>Page: Open native file picker
     end
@@ -138,6 +141,8 @@ Gallery processing stays on the device. The extension contains no telemetry. Sel
 - [`test.html`](test.html) and [`test.js`](test.js): Local upload-integration test page.
 - [`tests/background.protocol.test.js`](tests/background.protocol.test.js): Message-size and thumbnail-storage regression coverage.
 - [`tests/background.migration.test.js`](tests/background.migration.test.js): Restart, failure, collision, cleanup, and migration recovery coverage.
+- [`tests/background.download-preview.test.js`](tests/background.download-preview.test.js): Download-preview limits, caching, sender validation, and type fallback coverage.
+- [`tests/picker.relay.test.js`](tests/picker.relay.test.js): Picker Close/selection relay, deduplication, fast-click, and worker-restart coverage.
 
 ## Installation
 
@@ -201,7 +206,7 @@ Copy an actual bitmap image, then click **Add from clipboard** again. Plain text
 
 ### A recent download cannot be attached
 
-The browser history entry may point to an expired, authenticated, local, or oversized resource. Use **Show all files** and select the downloaded file from the native picker.
+The browser history entry may point to an expired, authenticated, local, or oversized resource. Use **Browse files** and select the downloaded file from the native picker.
 
 ## Development checks
 

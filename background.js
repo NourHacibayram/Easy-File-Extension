@@ -10,6 +10,19 @@ const MAX_NEW_IMAGE_DATA_URL_LENGTH = Math.ceil(MAX_NEW_IMAGE_BYTES * 4 / 3) + 1
 const MAX_IMAGE_RESPONSE_LENGTH = 56 * 1024 * 1024;
 const LEGACY_RESPONSE_BUDGET = 24 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+const MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES = 8 * 1024 * 1024;
+const MAX_DOWNLOAD_THUMBNAIL_SOURCE_DATA_URL_LENGTH = Math.ceil(MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES * 4 / 3) + 1024;
+const DOWNLOAD_THUMBNAIL_FETCH_TIMEOUT_MS = 8000;
+const DOWNLOAD_THUMBNAIL_RENDER_TIMEOUT_MS = 5000;
+const MAX_DOWNLOAD_THUMBNAIL_CACHE_ENTRIES = 24;
+const SUPPORTED_DOWNLOAD_PREVIEW_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'image/bmp',
+  'image/avif'
+]);
 const MIGRATION_BATCH_RECORDS = 2;
 const MIGRATION_BATCH_BYTES = 24 * 1024 * 1024;
 const MAX_THUMBNAIL_DATA_URL_LENGTH = 512 * 1024;
@@ -21,7 +34,17 @@ let imageMutationQueue = Promise.resolve();
 let legacyMigrationCache = null;
 let offscreenOperationQueue = Promise.resolve();
 const thumbnailRequests = new Map();
+const downloadThumbnailRequests = new Map();
+const downloadThumbnailCache = new Map();
 const pickerSessions = new Map();
+const pickerSessionChallenges = new Map();
+const PICKER_SESSION_TTL_MS = 10 * 60_000;
+const PICKER_COMMAND_TYPES = new Set([
+  'CIP_CLOSE',
+  'CIP_SHOW_ALL',
+  'CIP_PICK_IMAGE',
+  'CIP_PICK_DOWNLOAD'
+]);
 
 // Clipboard images must only be reachable through the validated message API.
 // Content scripts still receive the small settings values they need via
@@ -706,11 +729,227 @@ function getFileTypeCategory(ext, mime) {
 function getMimeFromExt(ext) {
   const mimes = {
     pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    svg: 'image/svg+xml', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4',
+    svg: 'image/svg+xml', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
+    avif: 'image/avif', mp4: 'video/mp4',
     webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', zip: 'application/zip',
     txt: 'text/plain', json: 'application/json'
   };
   return mimes[(ext || '').toLowerCase()] || 'application/octet-stream';
+}
+
+function getDownloadNameAndExt(item) {
+  const name = typeof item?.filename === 'string' && item.filename
+    ? item.filename.split(/[\\/]/).pop()
+    : 'download';
+  const dot = name.lastIndexOf('.');
+  return {
+    name,
+    ext: dot > -1 ? name.slice(dot + 1).toLowerCase() : ''
+  };
+}
+
+function supportedDownloadPreviewMime(value) {
+  const mime = typeof value === 'string' ? value.split(';', 1)[0].trim().toLowerCase() : '';
+  if (mime === 'image/jpg' || mime === 'image/pjpeg') return 'image/jpeg';
+  return SUPPORTED_DOWNLOAD_PREVIEW_MIMES.has(mime) ? mime : '';
+}
+
+function getDownloadPreviewMime(item, ext = getDownloadNameAndExt(item).ext) {
+  const advertisedMime = supportedDownloadPreviewMime(item?.mime);
+  if (advertisedMime) return advertisedMime;
+  return supportedDownloadPreviewMime(getMimeFromExt(ext));
+}
+
+function downloadPreviewFingerprint(item) {
+  return [
+    item.id,
+    item.startTime || '',
+    item.endTime || '',
+    Number.isFinite(item.fileSize) ? item.fileSize : '',
+    item.filename || ''
+  ].join(':');
+}
+
+function makeDownloadPreviewError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function rememberDownloadThumbnail(fingerprint, thumbnailDataUrl) {
+  downloadThumbnailCache.delete(fingerprint);
+  downloadThumbnailCache.set(fingerprint, thumbnailDataUrl);
+  while (downloadThumbnailCache.size > MAX_DOWNLOAD_THUMBNAIL_CACHE_ENTRIES) {
+    downloadThumbnailCache.delete(downloadThumbnailCache.keys().next().value);
+  }
+}
+
+function promiseWithTimeout(promise, timeoutMs, error) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    }, timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (reason) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(reason);
+      }
+    );
+  });
+}
+
+async function fetchDownloadPreviewSource(item, previewMime) {
+  const knownSize = Number(item.fileSize);
+  if (Number.isFinite(knownSize) && knownSize > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES) {
+    throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+  }
+
+  const url = item.finalUrl || item.url;
+  if (!/^https?:\/\//i.test(url || '')) {
+    throw makeDownloadPreviewError('This image cannot be previewed from its download source.', 'DOWNLOAD_PREVIEW_UNAVAILABLE');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DOWNLOAD_THUMBNAIL_FETCH_TIMEOUT_MS);
+  try {
+    const options = {
+      signal: controller.signal,
+      credentials: 'include'
+    };
+    // The stream is canceled as soon as it crosses the bounded preview limit.
+    // Fetch the complete image because partial-range responses often cannot be
+    // decoded, and servers are free to ignore Range anyway.
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      throw makeDownloadPreviewError(`Image preview request failed (${response.status}).`, 'DOWNLOAD_PREVIEW_FETCH_FAILED');
+    }
+
+    const contentRange = response.headers.get('content-range') || '';
+    const rangeTotalMatch = contentRange.match(/\/(\d+)$/);
+    const rangeTotal = rangeTotalMatch ? Number(rangeTotalMatch[1]) : NaN;
+    const advertisedLength = Number(response.headers.get('content-length'));
+    if ((Number.isFinite(rangeTotal) && rangeTotal > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES)
+        || (Number.isFinite(advertisedLength) && advertisedLength > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES)) {
+      throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+    }
+
+    const responseTypeHeader = response.headers.get('content-type') || '';
+    const responseType = supportedDownloadPreviewMime(responseTypeHeader);
+    const normalizedHeader = responseTypeHeader.split(';', 1)[0].trim().toLowerCase();
+    if (normalizedHeader && normalizedHeader !== 'application/octet-stream' && !responseType) {
+      throw makeDownloadPreviewError('The download source did not return a supported image.', 'UNSUPPORTED_DOWNLOAD_PREVIEW');
+    }
+
+    const chunks = [];
+    let receivedBytes = 0;
+    if (response.body?.getReader) {
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        receivedBytes += value.byteLength;
+        if (receivedBytes > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES) {
+          await reader.cancel();
+          throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+        }
+        chunks.push(value);
+      }
+    } else {
+      const buffer = await response.arrayBuffer();
+      receivedBytes = buffer.byteLength;
+      if (receivedBytes > MAX_DOWNLOAD_THUMBNAIL_SOURCE_BYTES) {
+        throw makeDownloadPreviewError('This image is too large for a quick preview.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+      }
+      chunks.push(buffer);
+    }
+    if (receivedBytes === 0) {
+      throw makeDownloadPreviewError('The downloaded image is empty.', 'DOWNLOAD_PREVIEW_UNAVAILABLE');
+    }
+
+    const sourceDataUrl = await blobToDataURL(new Blob(chunks, { type: responseType || previewMime }));
+    if (typeof sourceDataUrl !== 'string'
+        || !sourceDataUrl.startsWith('data:image/')
+        || sourceDataUrl.length > MAX_DOWNLOAD_THUMBNAIL_SOURCE_DATA_URL_LENGTH) {
+      throw makeDownloadPreviewError('The image preview source is invalid.', 'DOWNLOAD_PREVIEW_TOO_LARGE');
+    }
+    return sourceDataUrl;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw makeDownloadPreviewError('Image preview timed out.', 'DOWNLOAD_PREVIEW_TIMEOUT');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function createDownloadThumbnail(item, previewMime) {
+  const sourceDataUrl = await fetchDownloadPreviewSource(item, previewMime);
+  return enqueueOffscreenOperation(async () => {
+    try {
+      await setupOffscreenDocument('offscreen.html');
+      const response = await promiseWithTimeout(
+        chrome.runtime.sendMessage({
+          target: 'offscreen',
+          action: 'CREATE_THUMBNAIL',
+          dataUrl: sourceDataUrl
+        }),
+        DOWNLOAD_THUMBNAIL_RENDER_TIMEOUT_MS,
+        makeDownloadPreviewError('Image preview rendering timed out.', 'DOWNLOAD_PREVIEW_TIMEOUT')
+      );
+      if (!response?.success || !validThumbnailDataUrl(response.thumbnailDataUrl)) {
+        throw makeDownloadPreviewError(
+          response?.error || 'Could not create an image preview.',
+          'DOWNLOAD_PREVIEW_RENDER_FAILED'
+        );
+      }
+      return response.thumbnailDataUrl;
+    } finally {
+      await closeOffscreenDocument();
+    }
+  });
+}
+
+async function getDownloadThumbnail(downloadId) {
+  const items = await chrome.downloads.search({ id: downloadId });
+  const item = Array.isArray(items) ? items[0] : null;
+  if (!item || item.state !== 'complete' || item.exists === false) {
+    throw makeDownloadPreviewError('Download is unavailable.', 'DOWNLOAD_NOT_FOUND');
+  }
+  const { ext } = getDownloadNameAndExt(item);
+  const previewMime = getDownloadPreviewMime(item, ext);
+  if (!previewMime) {
+    throw makeDownloadPreviewError('This file type does not support an image preview.', 'UNSUPPORTED_DOWNLOAD_PREVIEW');
+  }
+
+  const fingerprint = downloadPreviewFingerprint(item);
+  if (downloadThumbnailCache.has(fingerprint)) {
+    const cached = downloadThumbnailCache.get(fingerprint);
+    downloadThumbnailCache.delete(fingerprint);
+    downloadThumbnailCache.set(fingerprint, cached);
+    return cached;
+  }
+  if (downloadThumbnailRequests.has(fingerprint)) return downloadThumbnailRequests.get(fingerprint);
+
+  const request = createDownloadThumbnail(item, previewMime)
+    .then((thumbnailDataUrl) => {
+      rememberDownloadThumbnail(fingerprint, thumbnailDataUrl);
+      return thumbnailDataUrl;
+    })
+    .finally(() => downloadThumbnailRequests.delete(fingerprint));
+  downloadThumbnailRequests.set(fingerprint, request);
+  return request;
 }
 
 function senderHostname(sender) {
@@ -730,17 +969,150 @@ function isExtensionPageSender(sender) {
 
 function registerPickerSession(token, sender) {
   if (!/^[a-f0-9]{32}$/.test(token || '') || !Number.isInteger(sender?.tab?.id)) return false;
-  pickerSessions.set(token, { tabId: sender.tab.id, expiresAt: Date.now() + 30_000 });
+  let parentOrigin = '';
+  try {
+    parentOrigin = typeof sender.tab.url === 'string' ? new URL(sender.tab.url).origin : '';
+  } catch (error) {}
+  pickerSessions.set(token, createPickerSession(
+    sender.tab.id,
+    parentOrigin === 'null' ? '' : parentOrigin
+  ));
   return true;
+}
+
+function createPickerSession(tabId, parentOrigin) {
+  return {
+    tabId,
+    parentOrigin,
+    expiresAt: Date.now() + PICKER_SESSION_TTL_MS,
+    clipboardAuthorized: true,
+    commandIds: new Set()
+  };
 }
 
 function consumePickerSession(token, sender) {
   const session = pickerSessions.get(token);
-  pickerSessions.delete(token);
-  return !!session
+  const valid = !!session
     && session.expiresAt >= Date.now()
     && Number.isInteger(sender?.tab?.id)
-    && sender.tab.id === session.tabId;
+    && sender.tab.id === session.tabId
+    && session.clipboardAuthorized;
+  if (valid) session.clipboardAuthorized = false;
+  return valid;
+}
+
+function isPickerDocumentSender(sender) {
+  try {
+    const senderUrl = new URL(sender?.url || '');
+    const extensionUrl = new URL(chrome.runtime.getURL('picker.html'));
+    // Dynamic web-accessible URLs can use a randomized host. Chrome still
+    // identifies the sender with this extension's runtime id; constrain the
+    // remaining URL to an extension-scheme picker document only.
+    return sender?.id === chrome.runtime.id
+      && senderUrl.protocol === 'chrome-extension:'
+      && (senderUrl.pathname === extensionUrl.pathname || senderUrl.pathname.endsWith('/picker.html'));
+  } catch (error) {
+    return false;
+  }
+}
+
+function normalizePickerRelay(message) {
+  if (!message || message.action !== 'RELAY_PICKER_COMMAND') return null;
+  if (!PICKER_COMMAND_TYPES.has(message.type)) return null;
+  if (!/^[a-f0-9]{32}$/.test(message.token || '')) return null;
+  if (!/^[a-f0-9]{24,64}$/.test(message.commandId || '')) return null;
+  const command = {
+    action: 'PICKER_COMMAND',
+    type: message.type,
+    token: message.token,
+    commandId: message.commandId,
+    parentOrigin: typeof message.parentOrigin === 'string' ? message.parentOrigin : ''
+  };
+  if (message.type === 'CIP_PICK_IMAGE') {
+    if (!isValidImageId(message.imageId)) return null;
+    command.imageId = message.imageId;
+  }
+  if (message.type === 'CIP_PICK_DOWNLOAD') {
+    if (!Number.isSafeInteger(message.downloadId) || message.downloadId < 0) return null;
+    command.downloadId = message.downloadId;
+    command.name = typeof message.name === 'string' ? message.name.slice(0, 255) : 'download';
+  }
+  return command;
+}
+
+async function revalidatePickerSession(command, sender) {
+  if (!Number.isInteger(sender?.tab?.id)) return null;
+  const tabId = sender.tab.id;
+  let tabOrigin = '';
+  try {
+    tabOrigin = new URL(sender.tab.url || '').origin;
+    if (tabOrigin === 'null') tabOrigin = '';
+  } catch (error) {}
+  if (tabOrigin !== command.parentOrigin) return null;
+
+  const existingChallenge = pickerSessionChallenges.get(command.token);
+  if (existingChallenge) return existingChallenge;
+
+  const challenge = (async () => {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        action: 'PICKER_SESSION_CHALLENGE',
+        token: command.token,
+        parentOrigin: command.parentOrigin
+      });
+      if (!response?.success) return null;
+
+      // REGISTER_PICKER_SESSION may have won the race while the content script
+      // answered. Reuse it when it describes this exact tab-bound picker.
+      const current = pickerSessions.get(command.token);
+      if (current && current.tabId === tabId && current.parentOrigin === command.parentOrigin) return current;
+
+      const recovered = createPickerSession(tabId, command.parentOrigin);
+      pickerSessions.set(command.token, recovered);
+      return recovered;
+    } catch (error) {
+      return null;
+    }
+  })();
+  pickerSessionChallenges.set(command.token, challenge);
+  try {
+    return await challenge;
+  } finally {
+    if (pickerSessionChallenges.get(command.token) === challenge) {
+      pickerSessionChallenges.delete(command.token);
+    }
+  }
+}
+
+async function relayPickerCommand(message, sender) {
+  const command = normalizePickerRelay(message);
+  if (!command || !isPickerDocumentSender(sender)) {
+    return { success: false, code: 'INVALID_PICKER_COMMAND' };
+  }
+  let session = pickerSessions.get(command.token);
+  if (!session) session = await revalidatePickerSession(command, sender);
+  if (!session) return { success: false, code: 'INVALID_PICKER_SESSION' };
+  if (Number.isInteger(sender?.tab?.id) && sender.tab.id !== session.tabId) {
+    return { success: false, code: 'INVALID_PICKER_TAB' };
+  }
+  if (session.expiresAt < Date.now() || command.parentOrigin !== session.parentOrigin) {
+    pickerSessions.delete(command.token);
+    return { success: false, code: 'EXPIRED_PICKER_SESSION' };
+  }
+  if (session.commandIds.has(command.commandId)) return { success: true, duplicate: true };
+  session.commandIds.add(command.commandId);
+  while (session.commandIds.size > 64) session.commandIds.delete(session.commandIds.values().next().value);
+  session.expiresAt = Date.now() + PICKER_SESSION_TTL_MS;
+
+  try {
+    const response = await chrome.tabs.sendMessage(session.tabId, command);
+    if (response?.success) return response;
+    session.commandIds.delete(command.commandId);
+    return { success: false, code: response?.code || 'HOST_REJECTED_COMMAND' };
+  } catch (error) {
+    session.commandIds.delete(command.commandId);
+    return { success: false, code: 'HOST_UNAVAILABLE', error: error.message };
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -760,6 +1132,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'REGISTER_PICKER_SESSION') {
     sendResponse({ success: registerPickerSession(message.token, sender) });
     return false;
+  }
+
+  if (message.action === 'UNREGISTER_PICKER_SESSION') {
+    const session = pickerSessions.get(message.token);
+    const validSender = session
+      && Number.isInteger(sender?.tab?.id)
+      && sender.tab.id === session.tabId;
+    if (validSender) pickerSessions.delete(message.token);
+    sendResponse({ success: !!validSender });
+    return false;
+  }
+
+  if (message.action === 'RELAY_PICKER_COMMAND') {
+    relayPickerCommand(message, sender).then(sendResponse);
+    return true;
   }
 
   if (message.action === 'AUTO_CHECK_CLIPBOARD') {
@@ -920,20 +1307,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const downloads = items.map((item) => {
-        const name = item.filename ? item.filename.split(/[\\/]/).pop() : 'download';
-        const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+        const { name, ext } = getDownloadNameAndExt(item);
+        const mime = item.mime || getMimeFromExt(ext);
         return {
           id: item.id,
           name,
           ext,
-          mime: item.mime || getMimeFromExt(ext),
+          mime,
           fileSize: item.fileSize || 0,
           category: getFileTypeCategory(ext, item.mime),
+          previewable: !!getDownloadPreviewMime(item, ext),
           startTime: item.startTime
         };
       });
       sendResponse({ success: true, downloads });
     });
+    return true;
+  }
+
+  if (message.action === 'GET_DOWNLOAD_THUMBNAIL') {
+    if ((!isExtensionPageSender(sender) && !isPickerDocumentSender(sender))
+        || !Number.isSafeInteger(message.downloadId)
+        || message.downloadId < 0) {
+      sendResponse({
+        success: false,
+        code: 'INVALID_DOWNLOAD_PREVIEW_REQUEST',
+        error: 'Invalid download preview request.'
+      });
+      return false;
+    }
+    getDownloadThumbnail(message.downloadId)
+      .then((thumbnailDataUrl) => sendResponse({
+        success: true,
+        downloadId: message.downloadId,
+        thumbnailDataUrl
+      }))
+      .catch((error) => sendResponse({
+        success: false,
+        code: error.code || 'DOWNLOAD_PREVIEW_FAILED',
+        error: error.message
+      }));
     return true;
   }
 
