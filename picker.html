@@ -20,6 +20,13 @@
       </div>
 
       <div class="header-actions">
+        <button id="toggle-multiselect" class="multiselect-toggle" type="button" aria-pressed="false" title="Toggle multi-select mode">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9 11 3 3 7-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+          </svg>
+          <span id="multiselect-toggle-label">Select multiple</span>
+        </button>
         <button id="show-all" class="show-all" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3.75 7.5h5l1.5 2h10v8.25A2.25 2.25 0 0 1 18 20H6a2.25 2.25 0 0 1-2.25-2.25V7.5Z"/>
@@ -105,6 +112,27 @@
         </div>
         <div id="hidden-grid" class="items-grid" aria-live="polite"></div>
       </section>
+    </div>
+
+    <div id="multiselect-bar" class="multiselect-bar" hidden>
+      <div class="multiselect-bar-content">
+        <div class="multiselect-info">
+          <span class="multiselect-badge" id="multiselect-count">0 selected</span>
+          <span class="multiselect-hint">Click items to select</span>
+        </div>
+        <div class="multiselect-buttons">
+          <button id="multiselect-select-all" class="multiselect-btn multiselect-btn-secondary" type="button">Select visible</button>
+          <button id="multiselect-clear" class="multiselect-btn multiselect-btn-secondary" type="button">Clear</button>
+          <button id="multiselect-attach" class="multiselect-btn multiselect-btn-primary" type="button" disabled>
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span id="multiselect-attach-label">Attach selected</span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

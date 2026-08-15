@@ -147,6 +147,7 @@ svg {
   gap: 8px;
 }
 
+.multiselect-toggle,
 .show-all,
 .icon-button {
   position: relative;
@@ -155,6 +156,46 @@ svg {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.multiselect-toggle {
+  min-height: 40px;
+  padding: 0 13px;
+  gap: 7px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #c9d2e3;
+  font-size: 12px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+}
+
+.multiselect-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: #9d90f8;
+  transition: transform 150ms ease, stroke 150ms ease;
+}
+
+.multiselect-toggle:hover {
+  transform: translateY(-1px);
+  border-color: rgba(155, 140, 255, 0.45);
+  background: rgba(124, 109, 242, 0.12);
+  color: #fff;
+}
+
+.multiselect-toggle[aria-pressed="true"] {
+  border-color: rgba(155, 140, 255, 0.7);
+  background: linear-gradient(180deg, rgba(124, 109, 242, 0.35), rgba(95, 80, 220, 0.45));
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(124, 109, 242, 0.28), inset 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.multiselect-toggle[aria-pressed="true"] svg {
+  stroke: #fff;
+  transform: scale(1.08);
 }
 
 .show-all {
@@ -666,6 +707,67 @@ button:focus-visible,
   backdrop-filter: blur(8px);
 }
 
+.tile-check {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(11, 13, 20, 0.78);
+  color: transparent;
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 150ms ease, transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1), border-color 150ms ease, background-color 150ms ease;
+  pointer-events: none;
+}
+
+.tile-check svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.is-multiselect-active .tile-check {
+  opacity: 0.75;
+  transform: scale(1);
+}
+
+.tile:hover .tile-check {
+  border-color: rgba(155, 140, 255, 0.85);
+  opacity: 1;
+  transform: scale(1);
+}
+
+.tile.is-selected .tile-square {
+  border-color: var(--accent-bright);
+  box-shadow: 0 0 0 2.5px rgba(155, 140, 255, 0.45), 0 8px 24px rgba(124, 109, 242, 0.22);
+}
+
+.tile.is-selected .tile-check {
+  border-color: #9b8cff;
+  background: #7c6df2;
+  color: #ffffff;
+  opacity: 1;
+  transform: scale(1.05);
+  box-shadow: 0 2px 10px rgba(124, 109, 242, 0.55);
+}
+
+.is-multiselect-active .tile.is-selected .tile-square::after {
+  content: "Deselect";
+  background: rgba(244, 63, 94, 0.85);
+  border-color: rgba(251, 113, 133, 0.4);
+}
+
 .tile:hover .tile-square::after,
 .tile:focus-visible .tile-square::after {
   transform: translateY(0);
@@ -699,7 +801,7 @@ button:focus-visible,
   background: transparent;
   box-shadow: none;
   opacity: 1;
-  animation: spin 0.75s linear infinite;
+  animation: spin 0.85s linear infinite;
 }
 
 .preview {
@@ -831,9 +933,138 @@ button:focus-visible,
   pointer-events: none;
 }
 
-.toast {
+.has-multiselect-bar .picker-body {
+  padding-bottom: 74px;
+}
+
+.multiselect-bar {
   position: absolute;
   z-index: 10;
+  right: 18px;
+  bottom: 18px;
+  left: 18px;
+  animation: bar-slide-up 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes bar-slide-up {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.multiselect-bar-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(155, 140, 255, 0.32);
+  border-radius: 14px;
+  background: rgba(20, 24, 36, 0.95);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+}
+
+.multiselect-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.multiselect-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(124, 109, 242, 0.24);
+  border: 1px solid rgba(155, 140, 255, 0.4);
+  color: #ded9ff;
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.multiselect-hint {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.multiselect-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.multiselect-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.multiselect-btn-secondary {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: #b6c0d2;
+}
+
+.multiselect-btn-secondary:hover {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.multiselect-btn-primary {
+  border-color: rgba(155, 140, 255, 0.6);
+  background: linear-gradient(180deg, #8273ef, #6a59d9);
+  color: #fff;
+  font-weight: 720;
+  box-shadow: 0 4px 14px rgba(106, 89, 217, 0.35);
+}
+
+.multiselect-btn-primary:hover:not(:disabled) {
+  border-color: rgba(190, 180, 255, 0.8);
+  background: linear-gradient(180deg, #9082f6, #7463e2);
+  box-shadow: 0 6px 18px rgba(106, 89, 217, 0.45);
+  transform: translateY(-1px);
+}
+
+.multiselect-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.multiselect-btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.multiselect-btn-primary[aria-busy="true"] {
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+.toast {
+  position: absolute;
+  z-index: 12;
   right: 18px;
   bottom: 18px;
   max-width: min(360px, calc(100% - 36px));
@@ -850,7 +1081,11 @@ button:focus-visible,
   opacity: 0;
   pointer-events: none;
   backdrop-filter: blur(14px);
-  transition: opacity 180ms ease, transform 180ms ease;
+  transition: opacity 180ms ease, transform 180ms ease, bottom 180ms ease;
+}
+
+.has-multiselect-bar .toast {
+  bottom: 78px;
 }
 
 .toast::before {
@@ -960,6 +1195,18 @@ button:focus-visible,
     font-size: 14px;
   }
 
+  .multiselect-toggle {
+    min-height: 36px;
+    padding: 0 9px;
+    font-size: 11px;
+    gap: 5px;
+  }
+
+  .multiselect-toggle svg {
+    width: 14px;
+    height: 14px;
+  }
+
   .show-all {
     min-height: 36px;
     padding: 0 10px;
@@ -989,6 +1236,27 @@ button:focus-visible,
     justify-content: center;
     padding-right: 6px;
     padding-left: 6px;
+  }
+
+  .multiselect-bar {
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+  }
+
+  .multiselect-bar-content {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+
+  .multiselect-hint {
+    display: none;
+  }
+
+  .multiselect-btn {
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 10.5px;
   }
 }
 

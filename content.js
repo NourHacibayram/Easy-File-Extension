@@ -48,6 +48,29 @@ function normalizePickerCommand(message) {
     command.name = typeof message.name === 'string' ? message.name.slice(0, 255) : 'download';
     return command;
   }
+  if (message.type === 'CIP_PICK_BATCH') {
+    if (!Array.isArray(message.items) || message.items.length === 0 || message.items.length > 50) return null;
+    const validItems = [];
+    for (const item of message.items) {
+      if (!item || typeof item !== 'object') return null;
+      if (item.kind === 'image') {
+        if (typeof item.id !== 'string' || item.id.length < 1 || item.id.length > 160) return null;
+        validItems.push({ kind: 'image', id: item.id });
+      } else if (item.kind === 'download') {
+        if (!Number.isSafeInteger(item.id) || item.id < 0) return null;
+        validItems.push({
+          kind: 'download',
+          id: item.id,
+          name: typeof item.name === 'string' ? item.name.slice(0, 255) : 'download'
+        });
+      } else {
+        return null;
+      }
+    }
+    if (validItems.length === 0) return null;
+    command.items = validItems;
+    return command;
+  }
   return null;
 }
 
@@ -57,7 +80,7 @@ function routePickerCommand(rawMessage, session, handledCommandIds, handlers) {
     return { success: false, code: 'INVALID_PICKER_COMMAND' };
   }
   if (handledCommandIds.has(message.commandId)) return { success: true, duplicate: true };
-  if ((message.type === 'CIP_PICK_IMAGE' || message.type === 'CIP_PICK_DOWNLOAD')
+  if ((message.type === 'CIP_PICK_IMAGE' || message.type === 'CIP_PICK_DOWNLOAD' || message.type === 'CIP_PICK_BATCH')
       && handlers.selectionInProgress()) {
     return { success: false, code: 'SELECTION_IN_PROGRESS' };
   }
@@ -69,6 +92,7 @@ function routePickerCommand(rawMessage, session, handledCommandIds, handlers) {
 
   if (message.type === 'CIP_PICK_IMAGE') handlers.pickImage(message);
   else if (message.type === 'CIP_PICK_DOWNLOAD') handlers.pickDownload(message);
+  else if (message.type === 'CIP_PICK_BATCH') handlers.pickBatch(message);
   else if (message.type === 'CIP_SHOW_ALL') handlers.showAll();
   else handlers.close();
   return { success: true };
@@ -104,7 +128,6 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   const handledPickerCommandIds = new Set();
 
   const MAX_CAPTURE_BYTES = 6 * 1024 * 1024;
-  const pickerUrl = chrome.runtime.getURL('picker.html');
 
   chrome.runtime.sendMessage({ action: 'GET_DOMAIN_STATE' })
     .then((response) => {
@@ -526,6 +549,10 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
         selectionInProgress = true;
         selectDownloadedFile({ id: message.downloadId, name: sanitizeFilename(message.name) }, pickerToken);
       },
+      pickBatch: (message) => {
+        selectionInProgress = true;
+        selectBatchFiles(message.items, pickerToken);
+      },
       showAll: () => {
         triggerNativeFileInput();
         closeClipboardPickerModal();
@@ -538,9 +565,18 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     if (isDomainDisabled()) return;
     closeClipboardPickerModal();
 
+    let currentPickerUrl = '';
+    try {
+      if (!chrome?.runtime?.id) throw new Error('Extension context invalidated');
+      currentPickerUrl = chrome.runtime.getURL('picker.html');
+      pickerExtensionOrigin = new URL(chrome.runtime.getURL('')).origin;
+    } catch (error) {
+      triggerNativeFileInput();
+      return;
+    }
+
     pickerToken = createPickerToken();
     pickerParentOrigin = window.location.origin === 'null' ? '' : window.location.origin;
-    pickerExtensionOrigin = new URL(chrome.runtime.getURL('')).origin;
     focusBeforePicker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     handledPickerCommandIds.clear();
     const host = document.createElement('div');
@@ -569,10 +605,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     const frame = document.createElement('iframe');
     frame.title = 'Clipboard and downloads picker';
     const pickerParams = new URLSearchParams({ token: pickerToken, parentOrigin: pickerParentOrigin });
-    frame.src = `${pickerUrl}?${pickerParams}`;
-    // With use_dynamic_url enabled this is a per-browser-session extension
-    // origin, not necessarily the installed extension ID. Validate and target
-    // messages against the exact URL assigned to this picker instance.
+    frame.src = `${currentPickerUrl}?${pickerParams}`;
     pickerMessageOrigin = new URL(frame.src).origin;
     frame.referrerPolicy = 'no-referrer';
     frame.style.cssText = [
@@ -718,6 +751,49 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     } catch (error) {
       selectionInProgress = false;
       postToPicker({ type: 'CIP_HOST_ERROR', message: error.message || 'Could not access this download.' });
+    }
+  }
+
+  async function selectBatchFiles(items, selectionSession) {
+    try {
+      if (!Array.isArray(items) || items.length === 0) throw new Error('No files selected.');
+      const filePromises = items.map(async (item, index) => {
+        if (item.kind === 'image') {
+          const response = await chrome.runtime.sendMessage({ action: 'GET_IMAGE_DATA', id: item.id });
+          if (!response?.success || response.image?.id !== item.id || typeof response.image.dataUrl !== 'string') {
+            throw new Error(response?.error || 'Could not load saved image.');
+          }
+          const subtype = response.image.mimeType?.split('/')[1]?.replace(/[^a-z0-9.+-]/gi, '') || 'png';
+          const filename = `image_${Date.now()}_${index}_${Math.floor(Math.random() * 10000)}.${subtype}`;
+          return dataURLtoFile(response.image.dataUrl, filename);
+        } else if (item.kind === 'download') {
+          const response = await chrome.runtime.sendMessage({
+            action: 'FETCH_DOWNLOAD_DATA',
+            downloadId: item.id
+          });
+          if (!response?.success || typeof response.dataUrl !== 'string') {
+            throw new Error(response?.error || 'Could not access downloaded file.');
+          }
+          return dataURLtoFile(response.dataUrl, item.name || 'download');
+        }
+        throw new Error('Unknown item type.');
+      });
+
+      const results = await Promise.allSettled(filePromises);
+      const successfulFiles = results
+        .filter((r) => r.status === 'fulfilled' && r.value)
+        .map((r) => r.value);
+
+      if (successfulFiles.length === 0) {
+        const firstError = results.find((r) => r.status === 'rejected')?.reason;
+        throw new Error(firstError?.message || 'Could not load selected files.');
+      }
+
+      if (!activeModal?.isConnected || pickerToken !== selectionSession || isDomainDisabled()) return;
+      attachFilesToInput(successfulFiles);
+    } catch (error) {
+      selectionInProgress = false;
+      postToPicker({ type: 'CIP_HOST_ERROR', message: error.message || 'Could not attach selected files.' });
     }
   }
 

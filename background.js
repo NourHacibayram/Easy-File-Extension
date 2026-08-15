@@ -48,7 +48,8 @@ const PICKER_COMMAND_TYPES = new Set([
   'CIP_CLOSE',
   'CIP_SHOW_ALL',
   'CIP_PICK_IMAGE',
-  'CIP_PICK_DOWNLOAD'
+  'CIP_PICK_DOWNLOAD',
+  'CIP_PICK_BATCH'
 ]);
 
 // Clipboard images must only be reachable through the validated message API.
@@ -1074,6 +1075,28 @@ function normalizePickerRelay(message) {
     if (!Number.isSafeInteger(message.downloadId) || message.downloadId < 0) return null;
     command.downloadId = message.downloadId;
     command.name = typeof message.name === 'string' ? message.name.slice(0, 255) : 'download';
+  }
+  if (message.type === 'CIP_PICK_BATCH') {
+    if (!Array.isArray(message.items) || message.items.length === 0 || message.items.length > 50) return null;
+    const validItems = [];
+    for (const item of message.items) {
+      if (!item || typeof item !== 'object') return null;
+      if (item.kind === 'image') {
+        if (!isValidImageId(item.id)) return null;
+        validItems.push({ kind: 'image', id: item.id });
+      } else if (item.kind === 'download') {
+        if (!Number.isSafeInteger(item.id) || item.id < 0) return null;
+        validItems.push({
+          kind: 'download',
+          id: item.id,
+          name: typeof item.name === 'string' ? item.name.slice(0, 255) : 'download'
+        });
+      } else {
+        return null;
+      }
+    }
+    if (validItems.length === 0) return null;
+    command.items = validItems;
   }
   return command;
 }

@@ -21,6 +21,13 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
   const hiddenGrid = document.getElementById('hidden-grid');
   const hiddenSection = document.getElementById('hidden-section');
   const toggleHiddenButton = document.getElementById('toggle-hidden');
+  const toggleMultiSelectButton = document.getElementById('toggle-multiselect');
+  const multiSelectBar = document.getElementById('multiselect-bar');
+  const multiSelectCount = document.getElementById('multiselect-count');
+  const multiSelectSelectAllButton = document.getElementById('multiselect-select-all');
+  const multiSelectClearButton = document.getElementById('multiselect-clear');
+  const multiSelectAttachButton = document.getElementById('multiselect-attach');
+  const multiSelectAttachLabel = document.getElementById('multiselect-attach-label');
   const sourceTabs = Array.from(document.querySelectorAll('[role="tab"][aria-controls]'));
   const sourcePanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
   const migrationStatus = document.getElementById('migration-status');
@@ -42,6 +49,8 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
   let toastTimer = null;
   let downloadsInFlight = false;
   let downloadsRefreshQueued = false;
+  let multiSelectActive = false;
+  const selectedItems = new Map();
   const previewQueue = [];
   const previewCache = new Map();
 
@@ -49,6 +58,26 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
     showFatalState('This picker must be opened from an upload field.');
     return;
   }
+
+  toggleMultiSelectButton?.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    setMultiSelectMode(!multiSelectActive);
+  });
+
+  multiSelectSelectAllButton?.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    selectVisibleTiles();
+  });
+
+  multiSelectClearButton?.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    clearSelection();
+  });
+
+  multiSelectAttachButton?.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    attachSelectedItems();
+  });
 
   document.getElementById('show-all').addEventListener('click', (event) => {
     if (!event.isTrusted) return;
@@ -82,7 +111,14 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
   });
 
   window.addEventListener('keydown', (event) => {
-    if (event.isTrusted && event.key === 'Escape') sendToHost({ type: 'CIP_CLOSE' });
+    if (!event.isTrusted) return;
+    if (event.key === 'Escape') {
+      if (multiSelectActive && selectedItems.size > 0) {
+        clearSelection();
+      } else {
+        sendToHost({ type: 'CIP_CLOSE' });
+      }
+    }
   });
 
   window.addEventListener('message', (event) => {
@@ -329,14 +365,122 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
     observeVisiblePreviews();
   }
 
+  function setMultiSelectMode(active) {
+    multiSelectActive = !!active;
+    toggleMultiSelectButton?.setAttribute('aria-pressed', String(multiSelectActive));
+    document.querySelector('.picker-shell')?.classList.toggle('is-multiselect-active', multiSelectActive);
+    const label = document.getElementById('multiselect-toggle-label');
+    if (label) label.textContent = multiSelectActive ? 'Done' : 'Select multiple';
+    updateMultiSelectUI();
+  }
+
+  function toggleItemSelection(itemKey, itemData, clickedTile) {
+    if (selectedItems.has(itemKey)) {
+      selectedItems.delete(itemKey);
+    } else {
+      if (selectedItems.size >= 50) {
+        showToast('You can select up to 50 files at once.');
+        return;
+      }
+      selectedItems.set(itemKey, itemData);
+    }
+    syncTileSelectionDom(itemKey);
+    updateMultiSelectUI();
+  }
+
+  function syncTileSelectionDom(itemKey) {
+    const isSelected = selectedItems.has(itemKey);
+    document.querySelectorAll(`.tile[data-item-key="${CSS.escape(itemKey)}"]`).forEach((tile) => {
+      tile.classList.toggle('is-selected', isSelected);
+      if (isSelected) {
+        tile.setAttribute('aria-checked', 'true');
+      } else {
+        tile.removeAttribute('aria-checked');
+      }
+    });
+  }
+
+  function updateMultiSelectUI() {
+    const count = selectedItems.size;
+    if (multiSelectCount) multiSelectCount.textContent = `${count} selected`;
+    if (multiSelectAttachLabel) {
+      multiSelectAttachLabel.textContent = count > 0 ? `Attach selected (${count})` : 'Attach selected';
+    }
+    if (multiSelectAttachButton) {
+      multiSelectAttachButton.disabled = count === 0;
+      multiSelectAttachButton.removeAttribute('aria-busy');
+    }
+    const shell = document.querySelector('.picker-shell');
+    if (multiSelectActive) {
+      if (multiSelectBar) multiSelectBar.hidden = false;
+      shell?.classList.add('has-multiselect-bar');
+    } else {
+      if (multiSelectBar) multiSelectBar.hidden = true;
+      shell?.classList.remove('has-multiselect-bar');
+    }
+  }
+
+  function selectVisibleTiles() {
+    const activeSection = document.querySelector('.source-section:not([hidden])');
+    if (!activeSection) return;
+    const tiles = activeSection.querySelectorAll('.tile[data-item-key]');
+    tiles.forEach((tile) => {
+      const itemKey = tile.dataset.itemKey;
+      if (!itemKey) return;
+      if (itemKey.startsWith('image:')) {
+        const id = tile.dataset.imageId;
+        if (id && !selectedItems.has(itemKey) && selectedItems.size < 50) {
+          selectedItems.set(itemKey, { kind: 'image', id });
+          syncTileSelectionDom(itemKey);
+        }
+      } else if (itemKey.startsWith('download:')) {
+        const downloadId = Number(tile.dataset.downloadId);
+        const name = tile.dataset.downloadName || 'download';
+        if (Number.isSafeInteger(downloadId) && !selectedItems.has(itemKey) && selectedItems.size < 50) {
+          selectedItems.set(itemKey, { kind: 'download', id: downloadId, name });
+          syncTileSelectionDom(itemKey);
+        }
+      }
+    });
+    updateMultiSelectUI();
+  }
+
+  function clearSelection() {
+    selectedItems.clear();
+    document.querySelectorAll('.tile.is-selected').forEach((tile) => {
+      tile.classList.remove('is-selected');
+      tile.removeAttribute('aria-checked');
+    });
+    updateMultiSelectUI();
+  }
+
+  function attachSelectedItems() {
+    if (selectedItems.size === 0) return;
+    multiSelectAttachButton?.setAttribute('aria-busy', 'true');
+    selectedItems.forEach((item, itemKey) => {
+      document.querySelectorAll(`.tile[data-item-key="${CSS.escape(itemKey)}"]`).forEach((tile) => {
+        tile.setAttribute('aria-busy', 'true');
+      });
+    });
+    sendToHost({
+      type: 'CIP_PICK_BATCH',
+      items: Array.from(selectedItems.values())
+    });
+  }
+
   function createImageTile(image, isHidden) {
     const wrapper = document.createElement('div');
     wrapper.className = 'tile-wrap';
 
+    const itemKey = `image:${image.id}`;
+    const isSelected = selectedItems.has(itemKey);
+
     const tile = document.createElement('button');
     tile.type = 'button';
-    tile.className = 'tile';
+    tile.className = `tile${isSelected ? ' is-selected' : ''}`;
     tile.dataset.imageId = image.id;
+    tile.dataset.itemKey = itemKey;
+    if (isSelected) tile.setAttribute('aria-checked', 'true');
     tile.title = `Use ${image.width || 0} by ${image.height || 0} image`;
     tile.setAttribute('aria-label', `Attach ${image.width || 0} by ${image.height || 0} image`);
 
@@ -352,14 +496,25 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
     preview.dataset.previewState = 'waiting';
     square.appendChild(preview);
 
+    const check = document.createElement('span');
+    check.className = 'tile-check';
+    check.setAttribute('aria-hidden', 'true');
+    check.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+    square.appendChild(check);
+
     const label = document.createElement('span');
     label.className = 'tile-label';
     label.textContent = `${image.width || 0}x${image.height || 0}`;
     tile.append(square, label);
     tile.addEventListener('click', (event) => {
       if (!event.isTrusted) return;
-      tile.setAttribute('aria-busy', 'true');
-      sendToHost({ type: 'CIP_PICK_IMAGE', imageId: image.id });
+      if (event.shiftKey || event.ctrlKey || event.metaKey || multiSelectActive) {
+        if (!multiSelectActive) setMultiSelectMode(true);
+        toggleItemSelection(itemKey, { kind: 'image', id: image.id }, tile);
+      } else {
+        tile.setAttribute('aria-busy', 'true');
+        sendToHost({ type: 'CIP_PICK_IMAGE', imageId: image.id });
+      }
     });
 
     const hideButton = document.createElement('button');
@@ -397,9 +552,16 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
     }
 
     downloads.slice(0, 12).forEach((download) => {
+      const itemKey = `download:${download.id}`;
+      const isSelected = selectedItems.has(itemKey);
+
       const tile = document.createElement('button');
       tile.type = 'button';
-      tile.className = 'tile';
+      tile.className = `tile${isSelected ? ' is-selected' : ''}`;
+      tile.dataset.downloadId = String(download.id);
+      tile.dataset.downloadName = download.name || 'download';
+      tile.dataset.itemKey = itemKey;
+      if (isSelected) tile.setAttribute('aria-checked', 'true');
       tile.title = `Use ${download.name || 'download'}`;
       tile.setAttribute('aria-label', `Attach ${download.name || 'download'}`);
 
@@ -426,18 +588,33 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
         square.appendChild(createDownloadIcon(getDownloadLabel(download)));
       }
 
+      const check = document.createElement('span');
+      check.className = 'tile-check';
+      check.setAttribute('aria-hidden', 'true');
+      check.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+      square.appendChild(check);
+
       const label = document.createElement('span');
       label.className = 'tile-label';
       label.textContent = download.name || 'download';
       tile.append(square, label);
       tile.addEventListener('click', (event) => {
         if (!event.isTrusted || !Number.isInteger(download.id)) return;
-        tile.setAttribute('aria-busy', 'true');
-        sendToHost({
-          type: 'CIP_PICK_DOWNLOAD',
-          downloadId: download.id,
-          name: download.name || 'download'
-        });
+        if (event.shiftKey || event.ctrlKey || event.metaKey || multiSelectActive) {
+          if (!multiSelectActive) setMultiSelectMode(true);
+          toggleItemSelection(itemKey, {
+            kind: 'download',
+            id: download.id,
+            name: download.name || 'download'
+          }, tile);
+        } else {
+          tile.setAttribute('aria-busy', 'true');
+          sendToHost({
+            type: 'CIP_PICK_DOWNLOAD',
+            downloadId: download.id,
+            name: download.name || 'download'
+          });
+        }
       });
       downloadsGrid.appendChild(tile);
     });
@@ -601,6 +778,7 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
 
   function clearBusyTiles() {
     document.querySelectorAll('.tile[aria-busy="true"]').forEach((tile) => tile.removeAttribute('aria-busy'));
+    multiSelectAttachButton?.removeAttribute('aria-busy');
   }
 
   function showToast(message) {

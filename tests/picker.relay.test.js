@@ -116,6 +116,16 @@ const pickerSender = {
   assert.equal(download.success, true);
   assert.equal(delivered.at(-1).message.downloadId, 8);
 
+  const batch = await send({
+    action: 'RELAY_PICKER_COMMAND', type: 'CIP_PICK_BATCH', token,
+    commandId: '23232323232323232323232323232323',
+    items: [{ kind: 'image', id: 'img_123' }, { kind: 'download', id: 8, name: 'photo.png' }],
+    parentOrigin: 'https://example.test'
+  }, pickerSender);
+  assert.equal(batch.success, true);
+  assert.equal(delivered.at(-1).message.type, 'CIP_PICK_BATCH');
+  assert.equal(delivered.at(-1).message.items.length, 2);
+
   const showAll = await send({
     action: 'RELAY_PICKER_COMMAND', type: 'CIP_SHOW_ALL', token,
     commandId: '33333333333333333333333333333333', parentOrigin: 'https://example.test'

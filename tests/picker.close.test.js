@@ -53,6 +53,19 @@ assert.equal(normalizePickerCommand({
   downloadId: 42,
   name: '../photo.png'
 }).downloadId, 42);
+assert.deepEqual(normalizePickerCommand({
+  ...baseCommand,
+  type: 'CIP_PICK_BATCH',
+  items: [
+    { kind: 'image', id: 'img_1' },
+    { kind: 'download', id: 5, name: 'file.png' }
+  ]
+}).items, [
+  { kind: 'image', id: 'img_1' },
+  { kind: 'download', id: 5, name: 'file.png' }
+]);
+assert.equal(normalizePickerCommand({ ...baseCommand, type: 'CIP_PICK_BATCH', items: [] }), null);
+assert.equal(normalizePickerCommand({ ...baseCommand, type: 'CIP_PICK_BATCH', items: [{ kind: 'unknown' }] }), null);
 assert.equal(normalizePickerCommand({ ...baseCommand, commandId: 'short' }), null);
 assert.equal(normalizePickerCommand({ ...baseCommand, type: 'CIP_PICK_IMAGE', imageId: 'x'.repeat(161) }), null);
 assert.equal(normalizePickerCommand({ ...baseCommand, type: 'CIP_PICK_DOWNLOAD', downloadId: -1 }), null);
@@ -65,6 +78,7 @@ const handlers = {
   selectionInProgress: () => selectionBusy,
   pickImage: (message) => routed.push(['image', message.imageId]),
   pickDownload: (message) => routed.push(['download', message.downloadId]),
+  pickBatch: (message) => routed.push(['batch', message.items]),
   showAll: () => routed.push(['show-all']),
   close: () => routed.push(['close'])
 };
@@ -82,6 +96,15 @@ const imageCommand = {
 };
 assert.equal(routePickerCommand(imageCommand, routeSession, commandIds, handlers).success, true);
 assert.deepEqual(routed.pop(), ['image', 'img_1']);
+
+const batchCommand = {
+  ...baseCommand,
+  commandId: '12121212121212121212121212121212',
+  type: 'CIP_PICK_BATCH',
+  items: [{ kind: 'image', id: 'img_batch_1' }, { kind: 'download', id: 9, name: 'test.png' }]
+};
+assert.equal(routePickerCommand(batchCommand, routeSession, commandIds, handlers).success, true);
+assert.deepEqual(routed.pop(), ['batch', [{ kind: 'image', id: 'img_batch_1' }, { kind: 'download', id: 9, name: 'test.png' }]]);
 selectionBusy = true;
 const busyDownload = {
   ...baseCommand,

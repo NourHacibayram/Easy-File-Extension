@@ -46,7 +46,7 @@ The upload picker provides three areas:
 - **Downloads:** Recent entries from the browser downloads history. Supported image files and MP4/WebM/Ogg videos load small previews on demand; other files retain a clear type card.
 - **Protected:** Important gallery images that do not count toward the 50 recent-image rotation limit, loaded only when that section is opened.
 
-Choose an item to attach it to the page's upload target. Press `Esc`, use the close button, or click outside the picker to dismiss it. Use **Browse files** when a website requires the native picker or a recent download cannot be fetched.
+Choose an item to attach it immediately to the page's upload target. Click **Select multiple** (or hold `Ctrl`/`Cmd`/`Shift` while clicking) to choose multiple images and downloads, then attach them all together with **Attach selected**. Press `Esc`, use the close button, or click outside the picker to dismiss it. Use **Browse files** when a website requires the native picker or a recent download cannot be fetched.
 
 ## Data and message architecture
 
