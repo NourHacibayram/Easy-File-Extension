@@ -4,10 +4,12 @@
   const parsed = new DOMParser().parseFromString(source, 'text/html');
 
   document.body.replaceWith(parsed.body);
+  document.querySelectorAll('img[src^="icons/"]').forEach(image => image.src = `../${image.getAttribute('src')}`);
   document.title = 'Clipboard Gallery popup preview';
 
   const byId = (id) => document.getElementById(id);
-  byId('site-status').textContent = 'example.com';
+  byId('site-status').textContent = 'flow.google.com';
+  byId('gallery-summary').textContent = '6 available';
   byId('clear-all-btn').disabled = false;
   byId('active-count').textContent = '6';
   byId('hidden-count').textContent = '2';
@@ -29,7 +31,7 @@
   grid.hidden = false;
   grid.replaceChildren(...colors.map(createCard));
 
-  await Promise.all(Array.from(grid.images).map((image) => image.decode().catch(() => {})));
+  await Promise.all(Array.from(grid.querySelectorAll('img')).map((image) => image.decode().catch(() => {})));
   document.documentElement.dataset.visualReady = 'true';
 
   function createCard(pair, index) {

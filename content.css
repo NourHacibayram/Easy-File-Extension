@@ -11,9 +11,9 @@
   margin: 0 !important;
   padding: 24px !important;
   overflow: hidden !important;
-  background: rgba(10, 11, 18, 0.72) !important;
-  backdrop-filter: blur(8px) !important;
-  -webkit-backdrop-filter: blur(8px) !important;
+  background: rgba(12, 15, 11, 0.65) !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
   opacity: 0 !important;
   transition: opacity 0.2s ease !important;
   isolation: isolate !important;

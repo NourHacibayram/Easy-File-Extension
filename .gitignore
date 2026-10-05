@@ -20,3 +20,6 @@ yarn-error.log*
 
 # AI Agent Configuration Directory
 .agents/
+
+# Local UI snapshots and other development scratch files
+tmp/

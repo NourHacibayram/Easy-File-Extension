@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Choose a file</title>
+  <link rel="stylesheet" href="ui-theme.css">
   <link rel="stylesheet" href="picker.css">
 </head>
 <body>
@@ -15,7 +16,7 @@
         </span>
         <div class="brand-copy">
           <h1 id="picker-title">Choose a file</h1>
-          <p id="picker-subtitle">Select an item below to attach it instantly</p>
+          <p id="picker-subtitle">From your clipboard or recent downloads.</p>
         </div>
       </div>
 
@@ -70,12 +71,12 @@
               <span class="section-icon clipboard-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M9 5.5h6M8.5 7H7.25A2.25 2.25 0 0 0 5 9.25v9.5A2.25 2.25 0 0 0 7.25 21h9.5A2.25 2.25 0 0 0 19 18.75v-9.5A2.25 2.25 0 0 0 16.75 7H15.5V5A1.5 1.5 0 0 0 14 3.5h-4A1.5 1.5 0 0 0 8.5 5v2Z"/></svg>
               </span>
-              Clipboard
+              Recently copied
               <span id="clipboard-count" class="section-count">0</span>
             </h2>
             <p class="section-description">Recently copied images</p>
           </div>
-          <span class="source-hint">Click to attach</span>
+          <span class="source-hint">Click an image to attach</span>
         </div>
         <div id="clipboard-grid" class="items-grid" aria-live="polite"></div>
       </section>
@@ -87,7 +88,7 @@
               <span class="section-icon downloads-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M12 3.75v10.5m0 0 4-4m-4 4-4-4M5 18.25v1.25h14v-1.25"/></svg>
               </span>
-              Downloads
+              Recent downloads
               <span id="downloads-count" class="section-count">0</span>
             </h2>
             <p class="section-description">Files downloaded recently</p>
@@ -103,7 +104,7 @@
               <span class="section-icon protected-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M12 3.5 19 6v5.25c0 4.45-2.8 7.5-7 9.25-4.2-1.75-7-4.8-7-9.25V6l7-2.5Z"/><path d="m9.25 12 1.75 1.75 3.75-4"/></svg>
               </span>
-              Protected
+              Kept for later
               <span id="hidden-section-count" class="section-count">0</span>
             </h2>
             <p class="section-description">Saved items that never expire</p>
@@ -135,6 +136,7 @@
       </div>
     </div>
 
+    <footer class="picker-footer"><span>Stored on this device</span><span><kbd>Esc</kbd> to close</span></footer>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </main>
   <script src="picker.js"></script>

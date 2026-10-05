@@ -3,6 +3,7 @@
   const parsed = new DOMParser().parseFromString(source, 'text/html');
   parsed.querySelectorAll('script').forEach((script) => script.remove());
   document.body.replaceWith(parsed.body);
+  document.querySelectorAll('img[src^="icons/"]').forEach(image => image.src = `../${image.getAttribute('src')}`);
   document.title = 'Upload picker visual fixture';
 
   const close = document.createElement('button');
@@ -11,10 +12,10 @@
   close.setAttribute('aria-label', 'Close picker');
   close.textContent = '\u00d7';
   Object.assign(close.style, {
-    position: 'fixed', zIndex: '20', top: '10px', right: '10px', width: '40px', height: '40px',
-    display: 'grid', placeItems: 'center', padding: '0', border: '1px solid rgba(255,255,255,.12)',
-    borderRadius: '11px', background: 'rgba(27,31,44,.97)', color: '#cbd5e1',
-    boxShadow: '0 4px 14px rgba(0,0,0,.24)', font: '400 24px/1 system-ui,sans-serif', cursor: 'pointer'
+    position: 'fixed', zIndex: '20', top: '22px', right: '16px', width: '34px', height: '34px',
+    display: 'grid', placeItems: 'center', padding: '0', border: '0',
+    borderRadius: '4px', background: 'transparent', color: '#a1a99b',
+    font: '400 24px/1 system-ui,sans-serif', cursor: 'pointer'
   });
   close.addEventListener('click', () => {
     document.querySelector('.picker-shell')?.remove();

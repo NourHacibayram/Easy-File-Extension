@@ -109,6 +109,9 @@ function isTrustedPickerBackdrop(event, host) {
 if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   (function () {
   let targetInput = null;
+  let targetInputIsExact = false;
+  let pickerUsesPaste = false;
+  let pasteTarget = null;
   let activeModal = null;
   let pickerFrame = null;
   let pickerToken = '';
@@ -121,7 +124,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   // state. That avoids opening the picker during extension startup/reload.
   let domainDisabled = true;
   let trustedPageActions = [];
-  let lastTrustedPageActionTime = 0;
+  let lastTrustedPageActionTime = -Infinity;
   let lastBackgroundSyncTime = 0;
   let originalClickTrigger = null;
   let focusBeforePicker = null;
@@ -146,7 +149,11 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
       if (activeModal) {
         closeClipboardPickerModal();
       } else {
-        openClipboardPickerModal();
+        // The keyboard picker is a paste action, not a continuation of an old
+        // upload input that may still exist elsewhere on the page.
+        targetInput = null;
+        targetInputIsExact = false;
+        openClipboardPickerModal({ paste: true });
       }
       sendResponse?.({ success: true });
       return false;
@@ -183,6 +190,13 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   window.addEventListener('message', handlePickerMessage);
   window.addEventListener('paste', handleGlobalPaste, true);
   document.addEventListener('click', rememberTrustedPageAction, true);
+  document.addEventListener('pointerdown', rememberTrustedPageAction, true);
+  document.addEventListener('keydown', (event) => {
+    if (event.isTrusted && !activeModal && (event.key === 'Enter' || event.key === ' ')) {
+      lastTrustedPageActionTime = performance.now();
+    }
+  }, true);
+  document.addEventListener('cip-file-picker-request', handlePageFilePickerRequest, true);
   document.addEventListener('click', handleGeminiUploadMenuClick, true);
   document.addEventListener('click', handleFileInputClick, true);
 
@@ -236,8 +250,6 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   function rememberTrustedPageAction(event) {
     if (!event.isTrusted || activeModal?.contains(event.target)) return;
     lastTrustedPageActionTime = performance.now();
-    if (!isGeminiSite()) return;
-
     const action = event.target.closest?.('button, [role="button"], [role="menuitem"], label, a') || event.target;
     if (!action || action.matches?.('input[type="file"]')) return;
     trustedPageActions = trustedPageActions.filter((item) => item !== action);
@@ -268,6 +280,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     event.stopImmediatePropagation();
     originalClickTrigger = action;
     targetInput = findGeminiFileInput();
+    targetInputIsExact = false;
     openClipboardPickerModal();
   }
 
@@ -319,9 +332,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
       && performance.now() - lastTrustedPageActionTime < 1000;
     if (!event.target || (!event.isTrusted && !followsTrustedAction) || isDomainDisabled()) return;
 
-    const tag = event.target.tagName;
-    if (!['INPUT', 'BUTTON', 'LABEL', 'A', 'SPAN', 'DIV'].includes(tag)) return;
-    const input = event.target.closest('input[type="file"]');
+    const input = findEventFileInput(event);
     if (!input) return;
 
     if (!isImageInput(input) || input.dataset.cipBypass === 'true' || isBypassing) {
@@ -331,22 +342,45 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
 
     event.preventDefault();
     targetInput = input;
+    targetInputIsExact = true;
     originalClickTrigger = trustedPageActions[trustedPageActions.length - 1] || event.target;
     openClipboardPickerModal();
+  }
+
+  function findEventFileInput(event) {
+    return (event.composedPath?.() || [event.target]).find((node) =>
+      node instanceof HTMLInputElement && node.type === 'file'
+    ) || null;
+  }
+
+  function handlePageFilePickerRequest(event) {
+    // MAIN-world events are page-visible and untrusted. They can only open the
+    // picker after a real, recent user action; they cannot select gallery data.
+    if (isDomainDisabled() || isBypassing || activeModal
+        || !navigator.userActivation?.isActive
+        || performance.now() - lastTrustedPageActionTime >= 1000) return;
+    const input = findEventFileInput(event);
+    if (!input || input.disabled || !isImageInput(input)
+        || input.dataset.cipBypass === 'true' || input.dataset.cipTemporary === 'true') return;
+    targetInput = input;
+    targetInputIsExact = true;
+    originalClickTrigger = trustedPageActions[trustedPageActions.length - 1] || input;
+    openClipboardPickerModal();
+    if (activeModal?.isConnected) event.preventDefault();
   }
 
   function triggerNativeFileInput() {
     isBypassing = true;
     const useGeminiFileBridge = isGeminiSite();
-    if (useGeminiFileBridge && replayGeminiUploadAction()) {
+    if (!pickerUsesPaste && !targetInputIsExact && useGeminiFileBridge && replayGeminiUploadAction()) {
       setTimeout(() => {
         isBypassing = false;
       }, 1500);
       return;
     }
 
-    let pageInput = !useGeminiFileBridge && targetInput && document.contains(targetInput) ? targetInput : null;
-    if (!pageInput && !useGeminiFileBridge) {
+    let pageInput = !pickerUsesPaste && (!useGeminiFileBridge || targetInputIsExact) && targetInput && !targetInput.disabled ? targetInput : null;
+    if (!pageInput && !useGeminiFileBridge && !pickerUsesPaste) {
       const candidates = Array.from(document.querySelectorAll('input[type="file"]'))
         .filter((input) => !input.disabled && input.dataset.cipTemporary !== 'true');
       const targetAccept = (targetInput?.accept || '').toLowerCase();
@@ -412,11 +446,40 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     const dataTransfer = new DataTransfer();
     files.forEach((file) => dataTransfer.items.add(file));
 
+    if (pickerUsesPaste) {
+      const target = pasteTarget?.isConnected ? pasteTarget : findPasteTarget();
+      if (!target) {
+        selectionInProgress = false;
+        postToPicker({ type: 'CIP_HOST_ERROR', message: 'Click the message field before opening the picker.' });
+        return;
+      }
+      target.focus({ preventScroll: true });
+      // Flow's ProseMirror paste handler reads image files from clipboardData
+      // and prevents the event after accepting them. Dispatch to the captured
+      // composer, once, instead of delivering files to a stale upload input.
+      const pasted = !target.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, composed: true, clipboardData: dataTransfer
+      }));
+      const dropped = !pasted && !target.dispatchEvent(new DragEvent('drop', {
+        bubbles: true, cancelable: true, composed: true, dataTransfer
+      }));
+      if (pasted || dropped) {
+        closeClipboardPickerModal();
+      } else {
+        selectionInProgress = false;
+        postToPicker({ type: 'CIP_HOST_ERROR', message: 'This field did not accept the file. Try its upload button.' });
+      }
+      return;
+    }
+
     let input = targetInput;
-    if (!input || !document.contains(input)) input = document.querySelector('input[type="file"]');
+    // Keep the precise intercepted input, even when the site created it off
+    // DOM or removed it while our picker was open. Its change callback belongs
+    // to that upload action; an unrelated visible input is not a replacement.
+    if (!input) input = document.querySelector('input[type="file"]');
 
     let deliveredToInput = false;
-    if (input && document.contains(input)) {
+    if (input && !input.disabled) {
       const filesSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
       if (filesSetter) {
         try {
@@ -434,7 +497,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
       deliveredToInput = true;
     }
 
-    if (deliveredToInput && !useGeminiBridge) {
+    if (deliveredToInput && (!useGeminiBridge || targetInputIsExact)) {
       closeClipboardPickerModal();
       return;
     }
@@ -561,9 +624,20 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     });
   }
 
-  function openClipboardPickerModal() {
+  function findPasteTarget() {
+    const active = document.activeElement;
+    const focused = active instanceof HTMLElement
+      ? active.closest('[contenteditable="true"], [contenteditable="plaintext-only"], textarea') : null;
+    if (focused && !focused.disabled && !focused.readOnly) return focused;
+    return document.querySelector('flow-prompt-box [contenteditable="true"]')
+      || document.querySelector('[contenteditable="true"], [contenteditable="plaintext-only"], textarea:not(:disabled):not([readonly])');
+  }
+
+  function openClipboardPickerModal({ paste = false } = {}) {
     if (isDomainDisabled()) return;
     closeClipboardPickerModal();
+    pickerUsesPaste = paste;
+    pasteTarget = paste ? findPasteTarget() : null;
 
     let currentPickerUrl = '';
     try {
@@ -590,6 +664,11 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     });
 
     const dialog = document.createElement('div');
+    // Events from the dialog (including Chromium's iframe click events) are
+    // retargeted to the host outside this closed shadow root. Keep them here
+    // so they cannot be mistaken for a click on the dimmed backdrop and cancel
+    // an image selection while its runtime request is still in flight.
+    dialog.addEventListener('click', (event) => event.stopPropagation());
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-label', 'Clipboard and downloads picker');
@@ -616,10 +695,10 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
       'margin:0',
       'padding:0',
       'overflow:hidden',
-      'background:#252736',
-      'border:1px solid rgba(255,255,255,.08)',
-      'border-radius:12px',
-      'box-shadow:0 25px 60px rgba(0,0,0,.6)',
+      'background:#191c19',
+      'border:1px solid #3b4237',
+      'border-radius:10px',
+      'box-shadow:0 20px 64px rgba(0,0,0,.45)',
       'color-scheme:dark'
     ].join(';');
 
@@ -634,31 +713,28 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     directCloseButton.style.cssText = [
       'position:absolute',
       'z-index:3',
-      'top:10px',
-      'right:10px',
+      'top:22px',
+      'right:16px',
       'display:grid',
       'place-items:center',
-      'width:40px',
-      'height:40px',
+      'width:34px',
+      'height:34px',
       'padding:0',
-      'border:1px solid rgba(255,255,255,.12)',
-      'border-radius:11px',
-      'background:rgba(27,31,44,.97)',
-      'box-shadow:0 4px 14px rgba(0,0,0,.24)',
-      'color:#cbd5e1',
+      'border:0',
+      'border-radius:4px',
+      'background:transparent',
+      'color:#a1a99b',
       'font:400 24px/1 system-ui,sans-serif',
       'cursor:pointer',
       'transition:background-color .15s ease,color .15s ease,border-color .15s ease,transform .15s ease'
     ].join(';');
     directCloseButton.addEventListener('pointerenter', () => {
-      directCloseButton.style.background = 'rgba(73,32,47,.97)';
-      directCloseButton.style.borderColor = 'rgba(251,113,133,.42)';
-      directCloseButton.style.color = '#fda4af';
+      directCloseButton.style.background = '#2d322c';
+      directCloseButton.style.color = '#ebeee6';
     });
     directCloseButton.addEventListener('pointerleave', () => {
-      directCloseButton.style.background = 'rgba(27,31,44,.97)';
-      directCloseButton.style.borderColor = 'rgba(255,255,255,.12)';
-      directCloseButton.style.color = '#cbd5e1';
+      directCloseButton.style.background = 'transparent';
+      directCloseButton.style.color = '#a1a99b';
     });
     directCloseButton.addEventListener('click', (event) => {
       event.preventDefault();
@@ -669,6 +745,20 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     dialog.append(frame, directCloseButton);
     shadowRoot.appendChild(dialog);
     document.documentElement.appendChild(host);
+
+    // Flow's prompt attachment menu uses a native popover in the browser's
+    // top layer. No z-index can place a normal page element above that layer:
+    // clicks would hit Flow's backdrop and destroy its pending uploader. Put
+    // our picker in the same layer, above the existing menu, without closing it.
+    // Older browsers retain the regular positioned-overlay fallback.
+    if (typeof host.showPopover === 'function') {
+      host.setAttribute('popover', 'manual');
+      try {
+        host.showPopover();
+      } catch (error) {
+        host.removeAttribute('popover');
+      }
+    }
 
     activeModal = host;
     pickerFrame = frame;
