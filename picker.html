@@ -59,6 +59,7 @@
         <span>Protected</span>
         <span id="hidden-count" class="tab-count">0</span>
       </button>
+      <button id="source-recipes" class="source-tab" type="button" role="tab" aria-selected="false" aria-controls="recipes-section" tabindex="-1"><span>Recipes</span><span id="recipes-count" class="tab-count">0</span></button>
     </nav>
 
     <div id="picker-body" class="picker-body">
@@ -112,6 +113,11 @@
           <span class="protected-note">Private to this device</span>
         </div>
         <div id="hidden-grid" class="items-grid" aria-live="polite"></div>
+      </section>
+      <section id="recipes-section" class="source-section" role="tabpanel" aria-labelledby="source-recipes" hidden>
+        <div class="section-heading"><h2 class="section-title">Saved prompts & references</h2><button id="manage-recipes" class="recipe-manage" type="button">Manage recipes ↗</button></div>
+        <p id="recipe-context" class="recipe-context"></p>
+        <div id="recipe-list" class="recipe-list" aria-live="polite"></div>
       </section>
     </div>
 

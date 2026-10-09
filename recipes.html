@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Recipes · Clipboard Gallery</title>
+  <link rel="icon" href="icons/icon32.png"><link rel="stylesheet" href="ui-theme.css"><link rel="stylesheet" href="recipes.css">
+</head>
+<body>
+  <header class="page-header"><a href="popup.html" class="brand">Clipboard Gallery</a><span>Saved on this device</span></header>
+  <main class="workspace">
+    <aside class="library" aria-labelledby="library-title">
+      <div class="library-heading"><div><span class="eyebrow">Your reusable setups</span><h1 id="library-title">Recipes</h1></div><button id="new-recipe" type="button">+ New</button></div>
+      <p class="intro">Your go-to prompts, with optional reference images. Ready for your next conversation.</p>
+      <nav id="saved-recipes" aria-label="Saved recipes"><p class="muted">Loading recipes…</p></nav>
+      <p class="use-note">To use one: click your message field → <kbd>Ctrl+Shift+V</kbd> → <strong>Recipes</strong>.</p>
+    </aside>
+    <section class="editor" aria-labelledby="editor-title">
+      <header class="editor-heading"><div><span class="eyebrow">Prompts & references</span><h2 id="editor-title">New recipe</h2></div><span id="saved-state" class="muted">Unsaved</span></header>
+      <form id="recipe-form">
+        <label for="recipe-name">Recipe name</label>
+        <input id="recipe-name" maxlength="100" required placeholder="Product photos, character, visual style…" autocomplete="off">
+        <label for="recipe-prompt">Prompt</label>
+        <textarea id="recipe-prompt" maxlength="16000" rows="6" required placeholder="Write a prompt you want to reuse…"></textarea>
+        <p class="field-note">Inserted into the message field. Review and adjust it before generating.</p>
+        <div class="references-heading"><label id="references-label">Reference images · optional <span id="reference-count">0 / 8</span></label><button id="add-clipboard" type="button" class="quiet">Add from clipboard</button></div>
+        <p class="field-note">Save just the prompt, or choose up to 8 images below. Recipe copies survive gallery cleanup.</p>
+        <ol id="selected-references" class="selected-references" aria-label="Reference order"></ol>
+        <div id="reference-gallery" class="reference-gallery" role="group" aria-labelledby="references-label"></div>
+        <button id="more-images" type="button" class="quiet" hidden>Load more images</button>
+        <p id="recipe-status" role="status" aria-live="polite"></p>
+        <footer class="editor-actions"><button id="save-recipe" type="submit" class="primary">Save recipe</button><button id="cancel-edit" type="button" class="quiet">Cancel changes</button><button id="delete-recipe" type="button" class="danger" hidden>Delete recipe</button></footer>
+      </form>
+    </section>
+  </main>
+  <script src="recipes.js"></script>
+</body>
+</html>

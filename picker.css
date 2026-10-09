@@ -22,6 +22,22 @@ body { min-width: 280px; }
 .source-tab svg { display: none; }
 .source-tab:hover { color: var(--text); }
 .source-tab[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.source-tabs { overflow-x: auto; gap: 20px; }
+.source-tab { flex-shrink: 0; }
+.recipe-context { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 12px; }
+.recipe-row { display: grid; grid-template-columns: 64px minmax(0,1fr) auto; align-items: start; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.recipe-cover { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; background: var(--surface); }
+span.recipe-cover { display: grid; place-items: center; color: var(--accent); font-size: 25px; letter-spacing: -1px; }
+.recipe-row h3 { margin: 0 0 5px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.recipe-row p { color: var(--muted); margin: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recipe-row details { margin-top: 8px; color: var(--muted); font-size: 11px; }
+.recipe-row summary { cursor: pointer; }
+.recipe-row details p { margin-top: 8px; max-height: 160px; overflow: auto; }
+.recipe-use, .recipe-manage { padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: transparent; font-size: 11px; white-space: nowrap; }
+.recipe-use { color: var(--paper); background: var(--accent); border-color: var(--accent); }
+.recipe-use[aria-busy="true"] { cursor: progress; opacity: .6; }
+.recipe-manage:hover { background: var(--surface); }
+@media (max-width: 490px) { .recipe-row { grid-template-columns: 48px minmax(0,1fr); gap: 10px; } .recipe-cover { width: 48px; height: 48px; } .recipe-use { grid-column: 2; justify-self: start; } }
 .source-tab[aria-selected="true"]::after { position: absolute; content: ""; bottom: -1px; left: 0; right: 0; height: 2px; background: var(--accent); }
 .tab-count { color: var(--muted); font-size: 12px; font-weight: 400; }
 .picker-body { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }

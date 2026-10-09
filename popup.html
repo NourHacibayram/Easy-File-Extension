@@ -61,10 +61,15 @@
           Protected <span id="hidden-count" class="tab-count">0</span>
         </button>
       </div>
+      <button id="open-recipes" class="recipes-link" type="button">Recipes ↗</button>
       <span id="gallery-spinner" class="spinner toolbar-spinner" hidden aria-label="Refreshing gallery"></span>
     </nav>
 
     <main class="content">
+      <details id="insertion-timing" class="insertion-timing" hidden>
+        <summary id="insertion-timing-summary">Last recipe insertion</summary>
+        <p id="insertion-timing-detail"></p>
+      </details>
       <div class="gallery-heading">
         <span>Recently saved</span>
         <small id="gallery-summary">0 available</small>

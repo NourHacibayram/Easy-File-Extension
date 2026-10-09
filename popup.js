@@ -53,6 +53,28 @@ function popupImagesForView(images, view) {
 }
 
 if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
+  async function loadInsertionTiming() {
+    const panel = document.getElementById('insertion-timing');
+    if (!panel) return;
+    try {
+      const { lastRecipeTimingV1: timing } = await chrome.storage.local.get('lastRecipeTimingV1');
+      if (!timing || !Number.isFinite(timing.totalMs)) return;
+      const seconds = ms => `${(ms / 1000).toFixed(2)}s`;
+      document.getElementById('insertion-timing-summary').textContent = `Last recipe: ${seconds(timing.totalMs)}`;
+      document.getElementById('insertion-timing-detail').textContent =
+        `Connect ${seconds(timing.relayMs)} · Prepare ${seconds(timing.prepareMs)} · Editor ${seconds(timing.editorMs)}. `
+        + (['fileMs', 'promptMs', 'focusMs'].every(key => Number.isFinite(timing[key]))
+          ? `Files ${seconds(timing.fileMs)} · Prompt ${seconds(timing.promptMs)} · Focus ${seconds(timing.focusMs)}. ` : '')
+        + (typeof timing.promptFirst === 'boolean'
+          ? `${timing.promptFirst ? 'Prompt first' : 'Files first'} · ${timing.promptMethod}. ` : '')
+        + `${timing.imageCount} image${timing.imageCount === 1 ? '' : 's'}. Local timing only.`;
+      panel.hidden = false;
+    } catch (error) { /* Timing diagnostics must never interrupt the gallery. */ }
+  }
+  loadInsertionTiming();
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    if (area === 'local' && changes.lastRecipeTimingV1) loadInsertionTiming();
+  });
   const grid = document.getElementById('image-grid');
   const skeletonGrid = document.getElementById('skeleton-grid');
   const emptyState = document.getElementById('empty-state');
@@ -679,6 +701,9 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
 
   testButton.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('test.html') });
+  });
+  document.getElementById('open-recipes')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('recipes.html') });
   });
 
   function formatTimeAgo(timestamp) {

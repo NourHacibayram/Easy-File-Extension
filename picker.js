@@ -32,6 +32,8 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
   const sourcePanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
   const migrationStatus = document.getElementById('migration-status');
   const pickerBody = document.getElementById('picker-body');
+  const recipeList = document.getElementById('recipe-list');
+  const recipeIntent = query.get('intent') === 'paste';
 
   const MAX_PREVIEW_CONCURRENCY = 2;
   const PREVIEW_CACHE_LIMIT = 16;
@@ -140,6 +142,72 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
   renderGridState(downloadsGrid, 'Loading recent downloads...');
   requestImageList();
   loadDownloads();
+  if (recipeList) {
+    document.getElementById('recipe-context').textContent = recipeIntent
+      ? 'Insert a saved prompt and any reference images. Review them before generating.'
+      : 'To use a recipe, click the message field and open Ctrl+Shift+V.';
+    document.getElementById('manage-recipes').addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('recipes.html') });
+    });
+    loadRecipes();
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && changes.savedRecipesV1) loadRecipes();
+    });
+  }
+
+  async function loadRecipes() {
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'GET_RECIPES' });
+      if (!response?.success) throw new Error(response?.error || 'Could not load recipes.');
+      document.getElementById('recipes-count').textContent = response.recipes.length;
+      recipeList.replaceChildren();
+      if (!response.recipes.length) {
+        recipeList.textContent = 'Save a prompt with optional reference images in Manage recipes, then reuse it here.';
+        return;
+      }
+      const covers = [];
+      for (const recipe of response.recipes) {
+        const row = document.createElement('article'); row.className = 'recipe-row';
+        const cover = document.createElement(recipe.images.length ? 'img' : 'span'); cover.className = 'recipe-cover';
+        if (recipe.images.length) cover.alt = '';
+        else { cover.textContent = 'Aa'; cover.setAttribute('aria-hidden', 'true'); }
+        const copy = document.createElement('div');
+        const name = document.createElement('h3'); name.textContent = recipe.name;
+        const count = document.createElement('p'); count.textContent = recipe.images.length
+          ? `${recipe.images.length} reference image${recipe.images.length === 1 ? '' : 's'}` : 'Prompt only';
+        const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'View prompt';
+        const prompt = document.createElement('p'); prompt.textContent = recipe.prompt; details.append(summary, prompt);
+        copy.append(name, count, details);
+        const use = document.createElement('button'); use.type = 'button'; use.className = 'recipe-use'; use.textContent = 'Use recipe'; use.disabled = !recipeIntent;
+        use.addEventListener('click', event => {
+          if (!event.isTrusted || recipeList.querySelector('[aria-busy="true"]')) return;
+          use.setAttribute('aria-busy', 'true');
+          use.textContent = 'Inserting…';
+          // Recipe selection uses only the authenticated relay. The worker
+          // authorizes this exact recipe before the host requests its bytes.
+          chrome.runtime.sendMessage({ action: 'RELAY_PICKER_COMMAND', type: 'CIP_USE_RECIPE',
+            recipeId: recipe.id, token, parentOrigin: expectedParentOrigin, commandId: createCommandId(),
+            clickedAt: performance.timeOrigin + performance.now() })
+            .then(result => { if (!result?.success) { clearBusyTiles(); showToast(result?.error || 'Refresh the page and try again.'); } })
+            .catch(() => { clearBusyTiles(); showToast('The extension was updated. Refresh the page.'); });
+        });
+        row.append(cover, copy, use); recipeList.append(row);
+        if (recipe.images.length) covers.push({ cover, recipe });
+      }
+      // Only two small cover requests in flight; original bytes remain private
+      // until an explicit Use recipe action.
+      let next = 0;
+      await Promise.all([0, 1].map(async () => {
+        while (next < covers.length) {
+          const { cover, recipe } = covers[next++];
+          try {
+            const result = await chrome.runtime.sendMessage({ action: 'GET_RECIPE_THUMBNAIL', recipeId: recipe.id, imageId: recipe.images[0].id });
+            if (cover.isConnected && result?.thumbnailDataUrl?.startsWith('data:image/') && result.thumbnailDataUrl.length <= 512 * 1024) cover.src = result.thumbnailDataUrl;
+          } catch (error) { /* A failed cover must not hide usable saved prompts. */ }
+        }
+      }));
+    } catch (error) { recipeList.textContent = error.message; }
+  }
 
   function parseParentOrigin(value) {
     try {
@@ -778,6 +846,9 @@ function normalizePickerThumbnailResponse(response, previewKind, resourceId, max
 
   function clearBusyTiles() {
     document.querySelectorAll('.tile[aria-busy="true"]').forEach((tile) => tile.removeAttribute('aria-busy'));
+    document.querySelectorAll('.recipe-use[aria-busy="true"]').forEach(button => {
+      button.removeAttribute('aria-busy'); button.textContent = 'Use recipe';
+    });
     multiSelectAttachButton?.removeAttribute('aria-busy');
   }
 

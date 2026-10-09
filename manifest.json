@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Clipboard & Downloads Upload Manager",
-  "version": "1.1.8",
+  "version": "1.2.6",
   "minimum_chrome_version": "111",
   "incognito": "not_allowed",
-  "description": "Automatically presents recent clipboard images and downloaded files when uploading on any web page.",
+  "description": "Save clipboard images, downloads and reusable prompts with optional reference images for faster uploads and conversations.",
   "permissions": [
     "storage",
     "unlimitedStorage",

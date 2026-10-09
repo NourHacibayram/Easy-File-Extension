@@ -70,6 +70,9 @@ const fixtureScript = `
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Page.enable');
     const stub = `
+      // Keep this suite on the legacy decoding path even in a new Chrome;
+      // unpacked-extension tests exercise native fromBase64 when available.
+      Uint8Array.fromBase64 = undefined;
       window.transport = { token: '', listener: null };
       window.chrome = { runtime: {
         id: 'upload-test-extension',

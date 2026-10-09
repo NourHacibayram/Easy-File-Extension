@@ -43,13 +43,20 @@ const downloadThumbnailRequests = new Map();
 const downloadThumbnailCache = new Map();
 const pickerSessions = new Map();
 const pickerSessionChallenges = new Map();
+const RECIPES_KEY = 'savedRecipesV1';
+const RECIPE_IMAGE_PREFIX = 'recipeImageV1:';
+const RECIPE_THUMB_PREFIX = 'recipeImageThumbV1:';
+const MAX_RECIPES = 40;
+const MAX_RECIPE_IMAGES = 8;
+const MAX_RECIPE_PROMPT = 16000;
 const PICKER_SESSION_TTL_MS = 10 * 60_000;
 const PICKER_COMMAND_TYPES = new Set([
   'CIP_CLOSE',
   'CIP_SHOW_ALL',
   'CIP_PICK_IMAGE',
   'CIP_PICK_DOWNLOAD',
-  'CIP_PICK_BATCH'
+  'CIP_PICK_BATCH',
+  'CIP_USE_RECIPE'
 ]);
 
 // Clipboard images must only be reachable through the validated message API.
@@ -1071,6 +1078,11 @@ function normalizePickerRelay(message) {
     if (!isValidImageId(message.imageId)) return null;
     command.imageId = message.imageId;
   }
+  if (message.type === 'CIP_USE_RECIPE') {
+    if (!isRecipeId(message.recipeId)) return null;
+    command.recipeId = message.recipeId;
+    if (Number.isFinite(message.clickedAt)) command.clickedAt = message.clickedAt;
+  }
   if (message.type === 'CIP_PICK_DOWNLOAD') {
     if (!Number.isSafeInteger(message.downloadId) || message.downloadId < 0) return null;
     command.downloadId = message.downloadId;
@@ -1164,6 +1176,7 @@ async function relayPickerCommand(message, sender) {
   session.commandIds.add(command.commandId);
   while (session.commandIds.size > 64) session.commandIds.delete(session.commandIds.values().next().value);
   session.expiresAt = Date.now() + PICKER_SESSION_TTL_MS;
+  if (command.type === 'CIP_USE_RECIPE') session.selectedRecipeId = command.recipeId;
 
   try {
     const response = await chrome.tabs.sendMessage(session.tabId, command);
@@ -1178,6 +1191,66 @@ async function relayPickerCommand(message, sender) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.action !== 'string') return false;
+
+  if (['GET_RECIPES', 'SAVE_RECIPE', 'DELETE_RECIPE', 'GET_RECIPE_THUMBNAIL',
+    'GET_RECIPE_FOR_USE', 'GET_RECIPE_IMAGE_DATA', 'REPORT_RECIPE_TIMING'].includes(message.action)) {
+    const selectionRead = ['GET_RECIPE_FOR_USE', 'GET_RECIPE_IMAGE_DATA', 'REPORT_RECIPE_TIMING'].includes(message.action);
+    const session = pickerSessions.get(message.token);
+    const selected = selectionRead && sender?.id === chrome.runtime.id && session && session.expiresAt >= Date.now()
+      && isRecipeId(message.recipeId) && session.tabId === sender?.tab?.id && session.selectedRecipeId === message.recipeId;
+    if (!(selectionRead ? selected : isExtensionPageSender(sender) || isPickerDocumentSender(sender))) {
+      sendResponse({ success: false, error: 'Open the recipe from the extension picker.', code: 'RECIPE_ACCESS_DENIED' });
+      return false;
+    }
+    (async () => {
+      if (message.action === 'REPORT_RECIPE_TIMING') {
+        const timing = message.timing;
+        if (!timing || ['relayMs', 'prepareMs', 'editorMs', 'totalMs'].some(key =>
+          !Number.isFinite(timing[key]) || timing[key] < 0 || timing[key] > 600000)
+          || !Number.isInteger(timing.imageCount) || timing.imageCount < 0 || timing.imageCount > MAX_RECIPE_IMAGES
+          || !Number.isInteger(timing.bytes) || timing.bytes < 0 || timing.bytes > MAX_RECIPE_IMAGES * MAX_NEW_IMAGE_BYTES) throw new Error('Invalid insertion timing.');
+        const stages = {};
+        for (const key of ['fileMs', 'promptMs', 'focusMs']) {
+          if (timing[key] === undefined) continue;
+          if (!Number.isFinite(timing[key]) || timing[key] < 0 || timing[key] > 600000) throw new Error('Invalid insertion timing.');
+          stages[key] = timing[key];
+        }
+        if (timing.promptMethod !== undefined) {
+          if (!['native', 'paste', 'textarea', 'retry'].includes(timing.promptMethod)) throw new Error('Invalid insertion timing.');
+          stages.promptMethod = timing.promptMethod;
+        }
+        if (timing.promptFirst !== undefined) {
+          if (typeof timing.promptFirst !== 'boolean') throw new Error('Invalid insertion timing.');
+          stages.promptFirst = timing.promptFirst;
+        }
+        await chrome.storage.local.set({ lastRecipeTimingV1: {
+          timestamp: Date.now(), relayMs: timing.relayMs, prepareMs: timing.prepareMs,
+          editorMs: timing.editorMs, totalMs: timing.totalMs,
+          imageCount: timing.imageCount, bytes: timing.bytes, ...stages
+        } });
+        return { success: true };
+      }
+      if (message.action === 'SAVE_RECIPE') return { success: true, recipe: await saveRecipe(message.recipe) };
+      if (message.action === 'DELETE_RECIPE') {
+        await deleteRecipe(message.recipeId); return { success: true };
+      }
+      const recipes = await readRecipes();
+      if (message.action === 'GET_RECIPES') return { success: true, recipes };
+      const recipe = recipes.find(item => item.id === message.recipeId);
+      if (!recipe) throw new Error('This recipe no longer exists.');
+      if (message.action === 'GET_RECIPE_FOR_USE') return { success: true, recipe };
+      if (!recipe.images.some(image => image.id === message.imageId)) throw new Error('Image is not part of this recipe.');
+      if (message.action === 'GET_RECIPE_THUMBNAIL') return { success: true,
+        thumbnailDataUrl: await getRecipeThumbnail(recipe.id, message.imageId) };
+      const key = recipeImageKey(recipe.id, message.imageId);
+      const stored = await chrome.storage.local.get(key);
+      const image = stored[key];
+      if (!image?.dataUrl) throw new Error('A saved reference is unavailable. Edit the recipe to replace it.');
+      if (image.dataUrl.length > MAX_NEW_IMAGE_DATA_URL_LENGTH) throw new Error('Reference image is too large.');
+      return { success: true, image: { id: message.imageId, dataUrl: image.dataUrl, mimeType: image.mimeType } };
+    })().then(sendResponse).catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
 
   if (message.action === 'GET_DOMAIN_STATE') {
     chrome.storage.local.get('disabledDomains')
@@ -1521,6 +1594,141 @@ function enqueueImageMutation(operation) {
   const result = imageMutationQueue.then(operation);
   imageMutationQueue = result.catch(() => {});
   return result;
+}
+
+function isRecipeId(id) {
+  return typeof id === 'string' && /^recipe_[a-f0-9]{32}$/.test(id);
+}
+
+function recipeImageKey(recipeId, imageId) {
+  return `${RECIPE_IMAGE_PREFIX}${recipeId}:${encodeURIComponent(imageId)}`;
+}
+
+function recipeThumbKey(recipeId, imageId) {
+  return `${RECIPE_THUMB_PREFIX}${recipeId}:${encodeURIComponent(imageId)}`;
+}
+
+function recipeReferenceKeys(recipeId, imageId) {
+  return [recipeImageKey(recipeId, imageId), recipeThumbKey(recipeId, imageId)];
+}
+
+function getRecipeThumbnail(recipeId, imageId) {
+  const requestKey = `recipe:${recipeId}:${imageId}`;
+  if (thumbnailRequests.has(requestKey)) return thumbnailRequests.get(requestKey);
+  const request = (async () => {
+    const thumbKey = recipeThumbKey(recipeId, imageId);
+    const cached = await chrome.storage.local.get(thumbKey);
+    if (validThumbnailDataUrl(cached[thumbKey]?.thumbnailDataUrl)) return cached[thumbKey].thumbnailDataUrl;
+    const key = recipeImageKey(recipeId, imageId);
+    const stored = await chrome.storage.local.get(key);
+    const image = stored[key];
+    if (!image?.dataUrl) throw new Error('A saved reference is unavailable. Edit the recipe to replace it.');
+    validateNewImage(image);
+    // Version 1.2.0 embedded previews in large original records. Copy that
+    // preview once; later openings read only the separate, bounded thumbnail.
+    const thumbnailDataUrl = validThumbnailDataUrl(image.thumbnailDataUrl) ? image.thumbnailDataUrl : await enqueueOffscreenOperation(async () => {
+      try {
+        await setupOffscreenDocument('offscreen.html');
+        const result = await chrome.runtime.sendMessage({ target: 'offscreen', action: 'CREATE_THUMBNAIL', dataUrl: image.dataUrl });
+        if (!result?.success || !validThumbnailDataUrl(result.thumbnailDataUrl)) throw new Error('Could not create reference preview.');
+        return result.thumbnailDataUrl;
+      } finally { await closeOffscreenDocument(); }
+    });
+    await enqueueImageMutation(async () => {
+      // Immutable snapshots are never overwritten in place. A metadata check
+      // prevents a concurrent edit/delete from recreating a removed preview,
+      // without reading or rewriting the multi-megabyte original again.
+      const recipe = (await readRecipes()).find(recipe => recipe.id === recipeId);
+      if (recipe?.images.some(reference => reference.id === imageId)) {
+        await chrome.storage.local.set({ [thumbKey]: { thumbnailDataUrl } });
+      }
+    });
+    return thumbnailDataUrl;
+  })().finally(() => thumbnailRequests.delete(requestKey));
+  thumbnailRequests.set(requestKey, request);
+  return request;
+}
+
+async function readRecipes() {
+  const stored = await chrome.storage.local.get(RECIPES_KEY);
+  return (Array.isArray(stored[RECIPES_KEY]) ? stored[RECIPES_KEY] : []).filter(recipe =>
+    isRecipeId(recipe?.id) && typeof recipe.name === 'string' && recipe.name.trim() && recipe.name.length <= 100
+    && typeof recipe.prompt === 'string' && recipe.prompt.trim() && recipe.prompt.length <= MAX_RECIPE_PROMPT
+    && Array.isArray(recipe.images) && recipe.images.length <= MAX_RECIPE_IMAGES
+    && recipe.images.every(image => isValidImageId(image?.id))
+    && new Set(recipe.images.map(image => image.id)).size === recipe.images.length
+  ).slice(0, MAX_RECIPES);
+}
+
+function saveRecipe(draft) {
+  // Serialize snapshots with gallery mutations so a reference cannot rotate
+  // out or be deleted halfway through saving a recipe.
+  return enqueueImageMutation(async () => {
+    if (!draft || typeof draft.name !== 'string' || !draft.name.trim() || draft.name.length > 100
+      || typeof draft.prompt !== 'string' || !draft.prompt.trim() || draft.prompt.length > MAX_RECIPE_PROMPT
+      || !Array.isArray(draft.imageIds) || draft.imageIds.length > MAX_RECIPE_IMAGES
+      || draft.imageIds.some(id => !isValidImageId(id))
+      || new Set(draft.imageIds).size !== draft.imageIds.length) throw new Error('Add a name and a prompt, with up to 8 optional reference images.');
+    const recipes = await readRecipes();
+    const previous = draft.id ? recipes.find(recipe => recipe.id === draft.id) : null;
+    if (draft.id && !previous) throw new Error('This recipe no longer exists.');
+    if (!previous && recipes.length >= MAX_RECIPES) throw new Error('You can save up to 40 recipes.');
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const id = previous?.id || `recipe_${Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')}`;
+    const index = draft.imageIds.length ? await readCompleteImageIndex() : [];
+    const images = [];
+    const newKeys = [];
+    try {
+      // Each original is stored separately; neither a runtime response nor a
+      // storage write ever aggregates all reference image bytes.
+      for (const imageId of draft.imageIds) {
+        const priorImage = previous?.images.find(image => image.id === imageId);
+        const key = recipeImageKey(id, imageId);
+        if (priorImage) {
+          const existing = await chrome.storage.local.get(key);
+          if (!existing[key]?.dataUrl) throw new Error('A reference is missing. Remove it and select a replacement.');
+          images.push(priorImage);
+          continue;
+        }
+        const metadata = index.find(image => image.id === imageId);
+        const record = metadata && await readImageRecord(metadata);
+        if (!record) throw new Error('A selected image is no longer in the gallery. Refresh and choose it again.');
+        validateNewImage(record);
+        // Do not call getImageThumbnail while holding the mutation queue: its
+        // cache commit uses the same queue. Cold previews are generated later.
+        const cached = await chrome.storage.local.get(thumbnailStorageKey(imageId));
+        const thumbnailDataUrl = readValidStoredThumbnail(cached[thumbnailStorageKey(imageId)], metadata) || '';
+        newKeys.push(key);
+        await chrome.storage.local.set({ [key]: imageRecordForStorage(record) });
+        if (thumbnailDataUrl) {
+          const thumbKey = recipeThumbKey(id, imageId);
+          newKeys.push(thumbKey);
+          await chrome.storage.local.set({ [thumbKey]: { thumbnailDataUrl } });
+        }
+        images.push({ id: imageId, width: metadata.width, height: metadata.height, mimeType: record.mimeType });
+      }
+      const recipe = { id, name: draft.name.trim(), prompt: draft.prompt, images,
+        createdAt: previous?.createdAt || Date.now(), updatedAt: Date.now() };
+      await chrome.storage.local.set({ [RECIPES_KEY]: [recipe, ...recipes.filter(item => item.id !== id)] });
+      const removed = (previous?.images || []).filter(image => !draft.imageIds.includes(image.id));
+      // Metadata is committed before superseded snapshots are removed.
+      if (removed.length) await chrome.storage.local.remove(removed.flatMap(image => recipeReferenceKeys(id, image.id))).catch(() => {});
+      return recipe;
+    } catch (error) {
+      if (newKeys.length) await chrome.storage.local.remove(newKeys).catch(() => {});
+      throw error;
+    }
+  });
+}
+
+function deleteRecipe(id) {
+  return enqueueImageMutation(async () => {
+    const recipes = await readRecipes();
+    const recipe = recipes.find(item => item.id === id);
+    if (!recipe) throw new Error('This recipe no longer exists.');
+    await chrome.storage.local.set({ [RECIPES_KEY]: recipes.filter(item => item.id !== id) });
+    await chrome.storage.local.remove(recipe.images.flatMap(image => recipeReferenceKeys(id, image.id)));
+  });
 }
 
 function saveImage(newImage) {

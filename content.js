@@ -42,6 +42,12 @@ function normalizePickerCommand(message) {
     command.imageId = message.imageId;
     return command;
   }
+  if (message.type === 'CIP_USE_RECIPE') {
+    if (!/^recipe_[a-f0-9]{32}$/.test(message.recipeId || '')) return null;
+    command.recipeId = message.recipeId;
+    if (Number.isFinite(message.clickedAt)) command.clickedAt = message.clickedAt;
+    return command;
+  }
   if (message.type === 'CIP_PICK_DOWNLOAD') {
     if (!Number.isSafeInteger(message.downloadId) || message.downloadId < 0) return null;
     command.downloadId = message.downloadId;
@@ -80,7 +86,7 @@ function routePickerCommand(rawMessage, session, handledCommandIds, handlers) {
     return { success: false, code: 'INVALID_PICKER_COMMAND' };
   }
   if (handledCommandIds.has(message.commandId)) return { success: true, duplicate: true };
-  if ((message.type === 'CIP_PICK_IMAGE' || message.type === 'CIP_PICK_DOWNLOAD' || message.type === 'CIP_PICK_BATCH')
+  if ((message.type === 'CIP_PICK_IMAGE' || message.type === 'CIP_PICK_DOWNLOAD' || message.type === 'CIP_PICK_BATCH' || message.type === 'CIP_USE_RECIPE')
       && handlers.selectionInProgress()) {
     return { success: false, code: 'SELECTION_IN_PROGRESS' };
   }
@@ -93,6 +99,7 @@ function routePickerCommand(rawMessage, session, handledCommandIds, handlers) {
   if (message.type === 'CIP_PICK_IMAGE') handlers.pickImage(message);
   else if (message.type === 'CIP_PICK_DOWNLOAD') handlers.pickDownload(message);
   else if (message.type === 'CIP_PICK_BATCH') handlers.pickBatch(message);
+  else if (message.type === 'CIP_USE_RECIPE') handlers.useRecipe(message);
   else if (message.type === 'CIP_SHOW_ALL') handlers.showAll();
   else handlers.close();
   return { success: true };
@@ -112,6 +119,9 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
   let targetInputIsExact = false;
   let pickerUsesPaste = false;
   let pasteTarget = null;
+  let pasteSelection = null;
+  let recipeImagesApplied = '';
+  let recipePromptApplied = '';
   let activeModal = null;
   let pickerFrame = null;
   let pickerToken = '';
@@ -439,6 +449,18 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     if (file) attachFilesToInput([file]);
   }
 
+  function deliverFilesToEditor(target, dataTransfer) {
+    // Preserve paste-first delivery. Some upload zones cancel drop events
+    // without actually attaching files, so cancellation alone is insufficient
+    // to prefer a site's drop zone over its working clipboard handler.
+    if (!target.dispatchEvent(new ClipboardEvent('paste', {
+      bubbles: true, cancelable: true, composed: true, clipboardData: dataTransfer
+    }))) return true;
+    return !target.dispatchEvent(new DragEvent('drop', {
+      bubbles: true, cancelable: true, composed: true, dataTransfer
+    }));
+  }
+
   function attachFilesToInput(files) {
     files = Array.from(files || []).filter(Boolean);
     if (files.length === 0) return;
@@ -454,16 +476,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
         return;
       }
       target.focus({ preventScroll: true });
-      // Flow's ProseMirror paste handler reads image files from clipboardData
-      // and prevents the event after accepting them. Dispatch to the captured
-      // composer, once, instead of delivering files to a stale upload input.
-      const pasted = !target.dispatchEvent(new ClipboardEvent('paste', {
-        bubbles: true, cancelable: true, composed: true, clipboardData: dataTransfer
-      }));
-      const dropped = !pasted && !target.dispatchEvent(new DragEvent('drop', {
-        bubbles: true, cancelable: true, composed: true, dataTransfer
-      }));
-      if (pasted || dropped) {
+      if (deliverFilesToEditor(target, dataTransfer)) {
         closeClipboardPickerModal();
       } else {
         selectionInProgress = false;
@@ -616,6 +629,10 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
         selectionInProgress = true;
         selectBatchFiles(message.items, pickerToken);
       },
+      useRecipe: (message) => {
+        selectionInProgress = true;
+        applyRecipe(message.recipeId, pickerToken, message.clickedAt);
+      },
       showAll: () => {
         triggerNativeFileInput();
         closeClipboardPickerModal();
@@ -638,6 +655,17 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     closeClipboardPickerModal();
     pickerUsesPaste = paste;
     pasteTarget = paste ? findPasteTarget() : null;
+    pasteSelection = null;
+    if (pasteTarget instanceof HTMLTextAreaElement) {
+      pasteSelection = { start: pasteTarget.selectionStart, end: pasteTarget.selectionEnd };
+    } else if (pasteTarget) {
+      const selection = window.getSelection();
+      if (selection?.rangeCount && pasteTarget.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+        pasteSelection = selection.getRangeAt(0).cloneRange();
+      }
+    }
+    recipeImagesApplied = '';
+    recipePromptApplied = '';
 
     let currentPickerUrl = '';
     try {
@@ -683,7 +711,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
 
     const frame = document.createElement('iframe');
     frame.title = 'Clipboard and downloads picker';
-    const pickerParams = new URLSearchParams({ token: pickerToken, parentOrigin: pickerParentOrigin });
+    const pickerParams = new URLSearchParams({ token: pickerToken, parentOrigin: pickerParentOrigin, intent: paste ? 'paste' : 'upload' });
     frame.src = `${currentPickerUrl}?${pickerParams}`;
     pickerMessageOrigin = new URL(frame.src).origin;
     frame.referrerPolicy = 'no-referrer';
@@ -809,6 +837,151 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     }
   }
 
+  async function applyRecipe(recipeId, selectionSession, clickedAt) {
+    const now = () => performance.timeOrigin + performance.now();
+    const receivedAt = now();
+    const startedAt = Number.isFinite(clickedAt) && clickedAt <= receivedAt && receivedAt - clickedAt < 600000 ? clickedAt : receivedAt;
+    let preparedAt = null;
+    let totalBytes = 0;
+    let fileMs = 0;
+    let promptMs = 0;
+    let focusMs = 0;
+    let promptMethod = 'retry';
+    const isCurrent = () => activeModal?.isConnected && pickerToken === selectionSession && !isDomainDisabled();
+    try {
+      if (!pickerUsesPaste) throw new Error('Click the message field and open Ctrl+Shift+V to use a recipe.');
+      const response = await chrome.runtime.sendMessage({ action: 'GET_RECIPE_FOR_USE', recipeId, token: selectionSession });
+      const recipe = response?.recipe;
+      if (!response?.success || recipe?.id !== recipeId) throw new Error(response?.error || 'Could not load recipe.');
+      let target = pasteTarget?.isConnected ? pasteTarget : findPasteTarget();
+      if (!target) throw new Error('Click the message field before opening the picker.');
+      let transfer = null;
+      if (recipe.images.length && recipeImagesApplied !== recipeId) {
+        transfer = new DataTransfer();
+        const files = new Array(recipe.images.length);
+        let next = 0;
+        // Bound original-image transfers to two at a time. Keep results by
+        // their saved position even if storage reads finish out of order.
+        await Promise.all([0, 1].map(async () => {
+          while (next < recipe.images.length && isCurrent()) {
+            const index = next++;
+            const reference = recipe.images[index];
+            const result = await chrome.runtime.sendMessage({ action: 'GET_RECIPE_IMAGE_DATA', recipeId,
+              imageId: reference.id, token: selectionSession });
+            if (!isCurrent()) return;
+            if (!result?.success || result.image?.id !== reference.id) throw new Error(result?.error || 'Could not load reference image.');
+            const ext = result.image.mimeType?.split('/')[1]?.replace(/[^a-z0-9.+-]/gi, '') || 'png';
+            files[index] = dataURLtoFile(result.image.dataUrl, `reference_${index + 1}.${ext}`);
+          }
+        }));
+        if (!isCurrent()) return;
+        totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+        files.forEach(file => transfer.items.add(file));
+      }
+      if (!isCurrent()) return;
+      preparedAt = now();
+      const promptFirst = isGeminiSite() && recipe.images.length > 0;
+      const deliverReferences = () => {
+        if (!transfer) return;
+        const partial = recipePromptApplied === recipeId ? 'Prompt inserted, but ' : '';
+        target = target.isConnected ? target : findPasteTarget();
+        if (!target) throw new Error(`${partial}the message editor was closed. Open it and try again.`);
+        const focusStartedAt = now();
+        target.focus({ preventScroll: true });
+        focusMs += now() - focusStartedAt;
+        const fileStartedAt = now();
+        const filesAccepted = deliverFilesToEditor(target, transfer);
+        fileMs = now() - fileStartedAt;
+        if (!filesAccepted) throw new Error(`${partial}this editor did not accept the reference images. Try the site’s upload button.`);
+        recipeImagesApplied = recipeId;
+      };
+      const insertPrompt = () => {
+        if (recipePromptApplied === recipeId) return;
+        target = target.isConnected ? target : findPasteTarget();
+        const partial = recipeImagesApplied === recipeId ? 'References sent, but ' : '';
+        if (!target) throw new Error(`${partial}the message field closed before the prompt was inserted.`);
+        const focusStartedAt = now();
+        target.focus({ preventScroll: true });
+        if (target === pasteTarget && pasteSelection) {
+          if (target instanceof HTMLTextAreaElement) {
+            target.setSelectionRange(pasteSelection.start, pasteSelection.end);
+          } else if (pasteSelection instanceof Range && target.contains(pasteSelection.commonAncestorContainer)) {
+            const selection = window.getSelection();
+            selection.removeAllRanges(); selection.addRange(pasteSelection);
+          }
+        }
+        focusMs += now() - focusStartedAt;
+        const promptStartedAt = now();
+        const text = new DataTransfer();
+        text.setData('text/plain', recipe.prompt);
+        let accepted = false;
+        // Live measurements isolate Gemini's delay to text paste after image
+        // delivery. Its Quill editor observes native edits, so use the existing
+        // native insertion path first here, retaining caret, undo and input
+        // notifications. Keep image delivery and other editors unchanged.
+        if (recipe.images.length && isGeminiSite() && target.isContentEditable
+            && target.matches('.ql-editor') && target.closest('rich-textarea')
+            && target.getAttribute('aria-readonly') !== 'true') {
+          try { accepted = document.execCommand('insertText', false, recipe.prompt); }
+          catch (error) { /* Fall back to the working paste path if unavailable. */ }
+          if (accepted) promptMethod = 'native';
+        }
+        if (!accepted) {
+          accepted = !target.dispatchEvent(new ClipboardEvent('paste', {
+            bubbles: true, cancelable: true, composed: true, clipboardData: text
+          }));
+          if (accepted) promptMethod = 'paste';
+        }
+        if (!accepted && target instanceof HTMLTextAreaElement && !target.disabled && !target.readOnly) {
+          const start = target.selectionStart; const end = target.selectionEnd;
+          const value = target.value.slice(0, start) + recipe.prompt + target.value.slice(end);
+          if (target.maxLength >= 0 && value.length > target.maxLength) throw new Error(`${partial}this prompt exceeds the message field’s limit.`);
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(target, value);
+          target.setSelectionRange(start + recipe.prompt.length, start + recipe.prompt.length);
+          target.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertFromPaste', data: recipe.prompt }));
+          accepted = true;
+          promptMethod = 'textarea';
+        }
+        // Synthetic paste has no browser default insertion. For a plain rich
+        // editor, use its native editing operation to preserve undo and input
+        // notifications, rather than replacing the editor's entire contents.
+        if (!accepted && target.isContentEditable && target.getAttribute('aria-readonly') !== 'true') {
+          accepted = document.execCommand('insertText', false, recipe.prompt);
+          if (accepted) promptMethod = 'native';
+        }
+        if (!accepted) throw new Error(`${partial}this editor did not accept the prompt. Copy the prompt from Recipes.`);
+        promptMs = now() - promptStartedAt;
+        recipePromptApplied = recipeId;
+      };
+      // On Gemini, prompt-only insertion is fast while insertion immediately
+      // after a new image is slow. Complete the text edit before dispatching
+      // files. Track each accepted part so a retry cannot duplicate it.
+      if (promptFirst) {
+        insertPrompt();
+        if (!isCurrent()) return;
+        deliverReferences();
+      } else {
+        deliverReferences();
+        if (!isCurrent()) return;
+        insertPrompt();
+      }
+      const finishedAt = now();
+      // Store timings and fixed delivery labels only, never the prompt, image
+      // data, recipe name or website. Reporting follows successful insertion.
+      chrome.runtime.sendMessage({ action: 'REPORT_RECIPE_TIMING', recipeId, token: selectionSession,
+        timing: { relayMs: receivedAt - startedAt, prepareMs: preparedAt - receivedAt,
+          editorMs: finishedAt - preparedAt, totalMs: finishedAt - startedAt,
+          fileMs, promptMs, focusMs,
+          promptMethod, promptFirst,
+          imageCount: recipe.images.length, bytes: totalBytes } }).catch(() => {});
+      closeClipboardPickerModal();
+    } catch (error) {
+      if (!isCurrent()) return;
+      selectionInProgress = false;
+      postToPicker({ type: 'CIP_HOST_ERROR', message: error.message || 'Could not apply recipe.' });
+    }
+  }
+
   async function selectClipboardImage(imageId, selectionSession) {
     try {
       const response = await chrome.runtime.sendMessage({ action: 'GET_IMAGE_DATA', id: imageId });
@@ -901,9 +1074,15 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined') {
     const mimeMatch = parts[0].match(/:(.*?);/);
     if (!mimeMatch) throw new Error('Stored image type is invalid.');
 
-    const binary = atob(parts[1]);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    // Newer Chromium builds can decode directly into bytes, avoiding a large
+    // temporary binary string and a JavaScript loop on the site's UI thread.
+    let bytes;
+    if (typeof Uint8Array.fromBase64 === 'function') bytes = Uint8Array.fromBase64(parts[1]);
+    else {
+      const binary = atob(parts[1]);
+      bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    }
     return new File([bytes], sanitizeFilename(filename), { type: mimeMatch[1] });
   }
 
